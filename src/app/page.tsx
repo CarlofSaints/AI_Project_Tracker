@@ -21,10 +21,6 @@ export default async function DashboardPage() {
           orderBy: { isVercelDomain: "asc" },
         },
         signals: { select: { id: true, capability: true, source: true, evidence: true } },
-        noteEntries: {
-          select: { id: true, body: true, author: true, createdAt: true },
-          orderBy: { createdAt: "desc" },
-        },
       },
     }),
     prisma.organization.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),

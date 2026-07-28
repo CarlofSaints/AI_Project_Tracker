@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { runSync } from "@/lib/sync";
-import type { NoteAuthor, ProjectStage } from "@/generated/prisma/enums";
+import type { ProjectStage } from "@/generated/prisma/enums";
 
 /**
  * Every field on this list is human-owned — the sync engine never writes them,
@@ -49,29 +49,6 @@ export async function cycleCapabilityOverride(
   const next = current === null ? true : current === true ? false : null;
 
   await prisma.project.update({ where: { id: projectId }, data: { [field]: next } });
-  revalidatePath("/");
-}
-
-/**
- * Append a timestamped note to a project's journal. `author` defaults to CARL
- * for notes typed into the UI; pass ASSISTANT when Claude records something on
- * his behalf. The created-at timestamp is set by the database.
- */
-export async function addProjectNote(
-  projectId: string,
-  body: string,
-  author: NoteAuthor = "CARL",
-) {
-  const text = body.trim();
-  if (!text) return { ok: false as const, error: "Note is empty" };
-
-  await prisma.projectNote.create({ data: { projectId, body: text, author } });
-  revalidatePath("/");
-  return { ok: true as const };
-}
-
-export async function deleteProjectNote(noteId: string) {
-  await prisma.projectNote.delete({ where: { id: noteId } });
   revalidatePath("/");
 }
 

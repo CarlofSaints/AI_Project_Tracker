@@ -13,7 +13,7 @@
 
 import { prisma } from "@/lib/db";
 import { GitHubClient, configuredOwners, type GitHubRepo } from "@/lib/github";
-import { VercelClient, productionUrl, lastDeployedAt, type VercelProject } from "@/lib/vercel";
+import { VercelClient, productionUrl, type VercelProject } from "@/lib/vercel";
 import {
   connectionsFromEnvKeys,
   rollUp,
@@ -36,7 +36,6 @@ interface Candidate {
   vercelScopeSlug: string | null;
   vercelScopeName: string | null;
   productionUrl: string | null;
-  lastDeployedAt: Date | null;
   gitOwner: string | null;
   gitOwnerType: "USER" | "ORGANIZATION" | null;
   gitRepo: string | null;
@@ -130,7 +129,6 @@ export async function runSync(): Promise<SyncResult> {
         vercelScopeSlug: scope.slug,
         vercelScopeName: scope.name,
         productionUrl: productionUrl(project),
-        lastDeployedAt: lastDeployedAt(project),
         gitOwner: owner,
         gitOwnerType: null, // filled in from GitHub, which actually knows
         gitRepo: repo,
@@ -195,7 +193,6 @@ export async function runSync(): Promise<SyncResult> {
             vercelScopeSlug: null,
             vercelScopeName: null,
             productionUrl: null,
-            lastDeployedAt: null,
             ...gitFields,
             envKeys: [],
             domains: [],
@@ -254,7 +251,6 @@ async function persist(c: Candidate): Promise<boolean> {
     vercelScopeSlug: c.vercelScopeSlug,
     vercelScopeName: c.vercelScopeName,
     productionUrl: c.productionUrl,
-    lastDeployedAt: c.lastDeployedAt,
     gitOwner: c.gitOwner,
     gitOwnerType: c.gitOwnerType,
     gitRepo: c.gitRepo,

@@ -2,23 +2,10 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import {
-  addProjectNote,
-  cycleCapabilityOverride,
-  deleteProjectNote,
-  updateProjectAssignment,
-} from "@/app/actions";
+import { cycleCapabilityOverride, updateProjectAssignment } from "@/app/actions";
 
 type Capability = "EMAIL" | "SHAREPOINT" | "EXTERNAL_DATA";
 type Stage = "DEVELOPMENT" | "LIVE_ITERATING" | "HANDED_OVER" | "ARCHIVED";
-type NoteAuthor = "CARL" | "ASSISTANT";
-
-export interface GridNote {
-  id: string;
-  body: string;
-  author: NoteAuthor;
-  createdAt: Date;
-}
 
 export interface GridProject {
   id: string;
@@ -31,7 +18,6 @@ export interface GridProject {
   gitRepo: string | null;
   gitUrl: string | null;
   gitPushedAt: Date | null;
-  lastDeployedAt: Date | null;
   envVarCount: number;
   domainCount: number;
   databaseCount: number;
@@ -50,7 +36,6 @@ export interface GridProject {
   connections: { id: string; label: string; detail: string | null }[];
   domains: { id: string; domain: string; verified: boolean; isVercelDomain: boolean }[];
   signals: { id: string; capability: Capability; source: string; evidence: string }[];
-  noteEntries: GridNote[];
 }
 
 interface Org {
@@ -140,7 +125,6 @@ export function ProjectGrid({
               <th className="px-3 py-3 font-medium">Owner / scope</th>
               <th className="px-3 py-3 font-medium">Repo</th>
               <th className="px-3 py-3 font-medium">Vercel</th>
-              <th className="px-3 py-3 font-medium">Deployed</th>
               <th className="px-3 py-3 text-right font-medium">Env</th>
               <th className="px-3 py-3 text-right font-medium">Domains</th>
               <th className="px-3 py-3 text-right font-medium">DBs</th>
@@ -170,7 +154,7 @@ export function ProjectGrid({
             {filtered.length === 0 ? (
               <tr>
                 <td
-                  colSpan={15}
+                  colSpan={14}
                   className="px-4 py-12 text-center text-sm text-neutral-500 dark:text-neutral-400"
                 >
                   {projects.length === 0
@@ -272,16 +256,6 @@ function RowGroup({
           {p.vercelProjectName ?? <span className="text-neutral-400">not deployed</span>}
         </td>
 
-        <td className="px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400">
-          {p.lastDeployedAt ? (
-            <span suppressHydrationWarning title={formatDateTime(p.lastDeployedAt)}>
-              {formatDate(p.lastDeployedAt)}
-            </span>
-          ) : (
-            <span className="text-neutral-400">—</span>
-          )}
-        </td>
-
         <td className="px-3 py-2 text-right tabular-nums">{p.envVarCount || "—"}</td>
 
         <td className="px-3 py-2 text-right tabular-nums">
@@ -354,7 +328,7 @@ function RowGroup({
 
       {isOpen ? (
         <tr className="border-b border-neutral-100 bg-neutral-50/60 dark:border-neutral-800/60 dark:bg-neutral-800/30">
-          <td colSpan={15} className="px-12 py-4">
+          <td colSpan={14} className="px-12 py-4">
             <div className="grid gap-6 md:grid-cols-3">
               <DetailList
                 title="Databases"
@@ -403,136 +377,11 @@ function RowGroup({
                 </div>
               </div>
             ) : null}
-
-            <NotesPanel projectId={p.id} notes={p.noteEntries} />
           </td>
         </tr>
       ) : null}
     </>
   );
-}
-
-/**
- * A running note log for a project. Carl can type a note straight in, and the
- * assistant can drop notes here too — every entry is stamped with who wrote it
- * and the exact date and time, newest first.
- */
-function NotesPanel({ projectId, notes }: { projectId: string; notes: GridNote[] }) {
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const router = useRouter();
-
-  function add() {
-    const body = draft.trim();
-    if (!body) return;
-    setError(null);
-    startTransition(async () => {
-      const result = await addProjectNote(projectId, body);
-      if (result.ok) {
-        setDraft("");
-        router.refresh();
-      } else {
-        setError(result.error ?? "Could not save note");
-      }
-    });
-  }
-
-  function remove(noteId: string) {
-    startTransition(async () => {
-      await deleteProjectNote(noteId);
-      router.refresh();
-    });
-  }
-
-  return (
-    <div className="mt-5 border-t border-neutral-200 pt-3 dark:border-neutral-700">
-      <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Notes</div>
-
-      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start">
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // ⌘/Ctrl+Enter saves without reaching for the mouse.
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-          placeholder="Add a note — a reminder, something from a client call…"
-          rows={2}
-          className="w-full resize-y rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs outline-none placeholder:text-neutral-400 focus:border-[var(--brand)] focus:ring-1 focus:ring-[var(--brand)] dark:border-neutral-800 dark:bg-neutral-900 sm:max-w-md"
-        />
-        <button
-          onClick={add}
-          disabled={pending || draft.trim().length === 0}
-          className="shrink-0 rounded-lg bg-[var(--brand)] px-3 py-2 text-xs font-medium text-white transition hover:opacity-85 disabled:opacity-50"
-        >
-          {pending ? "Saving…" : "Add note"}
-        </button>
-      </div>
-      {error ? <div className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</div> : null}
-
-      {notes.length === 0 ? (
-        <div className="mt-3 text-xs text-neutral-400 dark:text-neutral-500">
-          No notes yet.
-        </div>
-      ) : (
-        <ul className="mt-3 space-y-2">
-          {notes.map((note) => (
-            <li
-              key={note.id}
-              className="group rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-                  <span
-                    className={`rounded px-1.5 py-0.5 font-medium ${
-                      note.author === "ASSISTANT"
-                        ? "bg-[var(--brand-2-soft)] text-[var(--brand-2-text)]"
-                        : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
-                    }`}
-                  >
-                    {note.author === "ASSISTANT" ? "Claude" : "Carl"}
-                  </span>
-                  <span suppressHydrationWarning>{formatDateTime(note.createdAt)}</span>
-                </div>
-                <button
-                  onClick={() => remove(note.id)}
-                  disabled={pending}
-                  aria-label="Delete note"
-                  className="text-xs text-neutral-300 opacity-0 transition hover:text-red-500 group-hover:opacity-100 disabled:opacity-50 dark:text-neutral-600"
-                >
-                  ✕
-                </button>
-              </div>
-              <div className="mt-1 whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-200">
-                {note.body}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/** Compact local date, e.g. "28 Jul 2026" — for the grid's Deployed column. */
-function formatDate(date: Date): string {
-  return `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
-}
-
-/** Local date + time, e.g. "28 Jul 2026, 14:05" — for note stamps and tooltips. */
-function formatDateTime(date: Date): string {
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${formatDate(date)}, ${hh}:${mm}`;
 }
 
 function CountButton({ count, onClick }: { count: number; onClick: () => void }) {

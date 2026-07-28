@@ -24,7 +24,7 @@ export interface VercelProject {
     productionBranch?: string;
   };
   targets?: {
-    production?: { alias?: string[]; url?: string; createdAt?: number; readyAt?: number };
+    production?: { alias?: string[]; url?: string };
   };
   updatedAt?: number;
 }
@@ -138,15 +138,4 @@ export function productionUrl(project: VercelProject): string | null {
   const aliases = project.targets?.production?.alias ?? [];
   const custom = aliases.find((a) => !a.endsWith(".vercel.app"));
   return custom ?? aliases[0] ?? project.targets?.production?.url ?? null;
-}
-
-/**
- * When the project last shipped to production. Prefers `readyAt` (the moment the
- * deployment went live) over `createdAt` (when the build was kicked off), and is
- * null for a project that has never had a production deployment.
- */
-export function lastDeployedAt(project: VercelProject): Date | null {
-  const prod = project.targets?.production;
-  const ts = prod?.readyAt ?? prod?.createdAt;
-  return ts ? new Date(ts) : null;
 }
