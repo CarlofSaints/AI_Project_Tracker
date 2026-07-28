@@ -47,9 +47,24 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="Projects" value={projects.length} hint="Across all scopes" />
-        <StatCard label="Clients" value={clientIds.size} hint="Organisations you invoice" />
-        <StatCard label="Customers" value={customerIds.size} hint="End customers served" />
+        <StatCard
+          label="Projects"
+          value={projects.length}
+          hint="Across all scopes"
+          accent="gradient"
+        />
+        <StatCard
+          label="Clients"
+          value={clientIds.size}
+          hint="Companies you invoice"
+          accent="brand"
+        />
+        <StatCard
+          label="Customers"
+          value={customerIds.size}
+          hint="Companies the work was for"
+          accent="brand2"
+        />
       </div>
 
       <ProjectGrid projects={projects} organizations={organizations} />

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -56,7 +56,7 @@ export function OrganizationManager({ organizations }: { organizations: ManagedO
             name="name"
             required
             placeholder="Atomic Marketing"
-            className="w-64 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-neutral-500"
+            className="w-64 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--brand)] focus:ring-1 focus:ring-[var(--brand)] dark:border-neutral-700 dark:bg-neutral-800"
           />
         </label>
 
@@ -66,7 +66,7 @@ export function OrganizationManager({ organizations }: { organizations: ManagedO
           </span>
           <select
             name="parentId"
-            className="w-64 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-800"
+            className="w-64 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--brand)] focus:ring-1 focus:ring-[var(--brand)] dark:border-neutral-700 dark:bg-neutral-800"
           >
             <option value="">— none —</option>
             {organizations.map((org) => (
@@ -80,7 +80,7 @@ export function OrganizationManager({ organizations }: { organizations: ManagedO
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-neutral-700 disabled:opacity-50 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
+          className="rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-85 disabled:opacity-50"
         >
           Add organisation
         </button>
@@ -165,13 +165,15 @@ function RoleBadges({ asClient, asCustomer }: { asClient: number; asCustomer: nu
   }
   return (
     <div className="flex gap-1">
+      {/* One accent each, used consistently across the app: magenta means
+          client, cyan means customer. A company doing both shows both. */}
       {asClient > 0 ? (
-        <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-medium text-sky-900 dark:bg-sky-500/15 dark:text-sky-300">
+        <span className="rounded bg-[var(--brand-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--brand-text)]">
           Client
         </span>
       ) : null}
       {asCustomer > 0 ? (
-        <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-900 dark:bg-violet-500/15 dark:text-violet-300">
+        <span className="rounded bg-[var(--brand-2-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--brand-2-text)]">
           Customer
         </span>
       ) : null}

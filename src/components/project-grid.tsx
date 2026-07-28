@@ -109,7 +109,7 @@ export function ProjectGrid({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter projects, repos, clients…"
-          className="w-72 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-900 dark:focus:border-neutral-600"
+          className="w-72 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-neutral-400 focus:border-[var(--brand)] focus:ring-1 focus:ring-[var(--brand)] dark:border-neutral-800 dark:bg-neutral-900"
         />
         <span className="text-xs text-neutral-500 dark:text-neutral-400">
           {filtered.length} of {projects.length}
@@ -220,7 +220,7 @@ function RowGroup({
             <span
               className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
                 p.gitOwnerType === "ORGANIZATION"
-                  ? "bg-violet-100 text-violet-900 dark:bg-violet-500/15 dark:text-violet-300"
+                  ? "bg-[var(--brand-soft)] text-[var(--brand-text)]"
                   : "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
               }`}
               title={p.gitOwnerType === "ORGANIZATION" ? "GitHub organisation" : "Personal account"}
@@ -368,7 +368,7 @@ function RowGroup({
                   {p.signals.map((s) => (
                     <span
                       key={s.id}
-                      className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-neutral-600 ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+                      className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-[var(--brand-2-text)] ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-700"
                       title={`${s.capability} · from ${s.source.replace("_", " ").toLowerCase()}`}
                     >
                       {s.evidence}
@@ -389,7 +389,7 @@ function CountButton({ count, onClick }: { count: number; onClick: () => void })
   return (
     <button
       onClick={onClick}
-      className="rounded px-1.5 py-0.5 tabular-nums underline decoration-dotted underline-offset-2 transition hover:bg-neutral-200 dark:hover:bg-neutral-700"
+      className="rounded px-1.5 py-0.5 tabular-nums underline decoration-dotted underline-offset-2 transition hover:bg-[var(--brand-soft)] hover:text-[var(--brand-text)]"
     >
       {count}
     </button>
@@ -427,9 +427,9 @@ function CapabilityCell({
       title={title}
       className={`h-6 w-6 rounded-full text-xs font-semibold transition ${
         value
-          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+          ? "bg-[var(--brand-2-soft)] text-[var(--brand-2-text)]"
           : "bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-600"
-      } ${isOverridden ? "ring-2 ring-neutral-400 dark:ring-neutral-500" : ""}`}
+      } ${isOverridden ? "ring-2 ring-[var(--brand)]" : ""}`}
     >
       {value ? "✓" : "–"}
     </button>
