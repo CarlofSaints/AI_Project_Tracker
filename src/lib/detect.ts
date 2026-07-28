@@ -184,20 +184,29 @@ export function signalsFromDependencies(deps: string[]): Signal[] {
   return out;
 }
 
-/** Infer the app's own storage from env var keys. */
+/**
+ * Infer the app's own storage from env var keys.
+ *
+ * Deduped by KIND rather than by name. A Neon database on Vercel sets both
+ * `DATABASE_URL` and `POSTGRES_*`; keying by name counted those as two separate
+ * Postgres databases and inflated every affected project's DB count. Where the
+ * same kind matches more than once, the rule that names a provider wins over
+ * the generic one, so we report "Neon" rather than a bare "Postgres".
+ */
 export function storesFromEnvKeys(keys: string[]): InferredStore[] {
-  const byName = new Map<string, InferredStore>();
+  const byKind = new Map<StoreKind, InferredStore>();
 
   for (const key of keys) {
     for (const [pattern, kind, provider] of STORE_ENV_RULES) {
       if (!pattern.test(key.toUpperCase())) continue;
-      // One store per kind+provider — POSTGRES_URL and POSTGRES_PRISMA_URL are
-      // the same database, not two.
-      const name = provider ?? defaultStoreName(kind);
-      if (!byName.has(name)) byName.set(name, { kind, provider, name });
+
+      const existing = byKind.get(kind);
+      if (existing && (existing.provider !== null || provider === null)) continue;
+
+      byKind.set(kind, { kind, provider, name: provider ?? defaultStoreName(kind) });
     }
   }
-  return [...byName.values()];
+  return [...byKind.values()];
 }
 
 /** Infer external systems (with human labels) from env var keys. */

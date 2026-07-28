@@ -63,9 +63,7 @@ export async function runSync(): Promise<SyncResult> {
   // ---------------------------------------------------------- Vercel
   if (vercelToken) {
     const vercel = new VercelClient(vercelToken);
-    const scopes: Array<{ id?: string; slug: string; name: string }> = [
-      { slug: "personal", name: "Personal" }, // no teamId — the user's own scope
-    ];
+    const scopes: Array<{ id?: string; slug: string; name: string }> = [];
 
     try {
       for (const team of await vercel.teams()) {
@@ -75,6 +73,17 @@ export async function runSync(): Promise<SyncResult> {
       log.push(`Could not list Vercel teams: ${message(err)}`);
     }
 
+    // Teams are swept first and the unteamed scope last, deliberately. Where a
+    // personal scope IS a team, the same projects appear under both — taking
+    // the team pass first means they get the real team name rather than the
+    // generic "Personal" label.
+    scopes.push({ slug: "personal", name: "Personal" }); // no teamId
+
+    // Collect across every scope BEFORE fetching per-project detail. A personal
+    // scope that is itself a team reports the same projects twice, and each
+    // duplicate would otherwise cost two more API calls for nothing.
+    const seen = new Map<string, { project: VercelProject; scope: (typeof scopes)[number] }>();
+
     for (const scope of scopes) {
       let projects: VercelProject[] = [];
       try {
@@ -83,53 +92,63 @@ export async function runSync(): Promise<SyncResult> {
         log.push(`Scope ${scope.slug}: ${message(err)}`);
         continue;
       }
-      log.push(`Vercel scope ${scope.slug}: ${projects.length} projects`);
 
+      let fresh = 0;
       for (const project of projects) {
-        const envKeys = await safe(
-          () => vercel.envVars(project.id, scope.id),
-          [],
-          log,
-          `env vars for ${project.name}`,
-        );
-        const domains = await safe(
-          () => vercel.domains(project.id, scope.id),
-          [],
-          log,
-          `domains for ${project.name}`,
-        );
-
-        const owner = project.link?.org ?? null;
-        const repo = project.link?.repo ?? null;
-        const key = owner && repo ? `${owner}/${repo}`.toLowerCase() : `vercel:${project.id}`;
-
-        candidates.set(key, {
-          vercelProjectId: project.id,
-          vercelProjectName: project.name,
-          vercelScopeSlug: scope.slug,
-          vercelScopeName: scope.name,
-          productionUrl: productionUrl(project),
-          gitOwner: owner,
-          gitOwnerType: null, // filled in from GitHub, which actually knows
-          gitRepo: repo,
-          gitUrl: owner && repo ? `https://github.com/${owner}/${repo}` : null,
-          gitPrivate: null,
-          gitPushedAt: null,
-          gitOpenIssues: null,
-          envKeys: envKeys.map((e) => ({
-            key: e.key,
-            targets: e.target ?? [],
-            isSensitive: e.type === "sensitive",
-          })),
-          domains: domains.map((d) => ({
-            domain: d.name,
-            verified: Boolean(d.verified),
-            isVercelDomain: d.name.endsWith(".vercel.app"),
-            redirectTo: d.redirect ?? null,
-          })),
-          deps: [],
-        });
+        if (seen.has(project.id)) continue;
+        seen.set(project.id, { project, scope });
+        fresh++;
       }
+      log.push(
+        `Vercel scope ${scope.slug}: ${projects.length} projects` +
+          (fresh === projects.length ? "" : ` (${projects.length - fresh} already seen)`),
+      );
+    }
+
+    for (const { project, scope } of seen.values()) {
+      const envKeys = await safe(
+        () => vercel.envVars(project.id, scope.id),
+        [],
+        log,
+        `env vars for ${project.name}`,
+      );
+      const domains = await safe(
+        () => vercel.domains(project.id, scope.id),
+        [],
+        log,
+        `domains for ${project.name}`,
+      );
+
+      const owner = project.link?.org ?? null;
+      const repo = project.link?.repo ?? null;
+      const key = owner && repo ? `${owner}/${repo}`.toLowerCase() : `vercel:${project.id}`;
+
+      candidates.set(key, {
+        vercelProjectId: project.id,
+        vercelProjectName: project.name,
+        vercelScopeSlug: scope.slug,
+        vercelScopeName: scope.name,
+        productionUrl: productionUrl(project),
+        gitOwner: owner,
+        gitOwnerType: null, // filled in from GitHub, which actually knows
+        gitRepo: repo,
+        gitUrl: owner && repo ? `https://github.com/${owner}/${repo}` : null,
+        gitPrivate: null,
+        gitPushedAt: null,
+        gitOpenIssues: null,
+        envKeys: envKeys.map((e) => ({
+          key: e.key,
+          targets: e.target ?? [],
+          isSensitive: e.type === "sensitive",
+        })),
+        domains: domains.map((d) => ({
+          domain: d.name,
+          verified: Boolean(d.verified),
+          isVercelDomain: d.name.endsWith(".vercel.app"),
+          redirectTo: d.redirect ?? null,
+        })),
+        deps: [],
+      });
     }
   }
 

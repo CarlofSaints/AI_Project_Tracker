@@ -1,5 +1,10 @@
-import "dotenv/config";
+import { config } from "dotenv";
 import { defineConfig } from "prisma/config";
+
+// `vercel env pull` writes DATABASE_URL into .env.local, while our own tokens
+// live in .env. Load both, .env.local first — dotenv won't overwrite a key it
+// has already seen, so the Vercel-managed value wins.
+config({ path: [".env.local", ".env"] });
 
 // Prisma 7 config. The CLI (db push, migrate, studio) reads the connection
 // string from here; the running app never does — it gets one through the Neon
