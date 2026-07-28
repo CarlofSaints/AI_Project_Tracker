@@ -1,0 +1,255 @@
+// AI Project CRM — inventory of every Claude/AI project across GitHub + Vercel.
+//
+// Design notes:
+//  * Organization is ONE table. "Client" vs "Customer" is a role held on a
+//    Project, not a property of the org — so Snomaster is a single row that can
+//    be an end customer under Atomic Marketing on one project and the client on
+//    another.
+//  * Capability flags (email / SharePoint / external data) are auto-detected on
+//    sync and stored in *Auto. A nullable *Override lets Carl correct one
+//    without the next sync stomping it. Effective value = override ?? auto.
+//  * User + nullable owner FKs exist so GitHub OAuth can be added later without
+//    a painful migration. Nothing reads them yet.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 no longer accepts `url` here — the connection string for CLI
+// commands lives in prisma.config.ts, and the runtime gets it via the adapter
+// in src/lib/db.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------- enums
+
+enum ProjectStage {
+  DEVELOPMENT // in development
+  LIVE_ITERATING // live but iterating
+  HANDED_OVER // handed over completely
+  ARCHIVED // dead / parked
+}
+
+enum StoreKind {
+  BLOB
+  POSTGRES
+  REDIS
+  EDGE_CONFIG
+  OTHER
+}
+
+enum Capability {
+  EMAIL
+  SHAREPOINT
+  EXTERNAL_DATA
+}
+
+enum SignalSource {
+  ENV_KEY // inferred from a Vercel env var name
+  DEPENDENCY // inferred from package.json
+  MANUAL // Carl said so
+}
+
+enum GitOwnerType {
+  USER // e.g. CarlofSaints
+  ORGANIZATION // e.g. OuterJoinZA
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+// ---------------------------------------------------------------- core
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  notes     String?
+  website   String?
+  // Optional default agency relationship — only used to pre-fill the project
+  // form. The project's own clientId/endCustomerId are the source of truth.
+  parentId  String?
+  parent    Organization?  @relation("OrgHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Organization[] @relation("OrgHierarchy")
+
+  projectsAsClient      Project[] @relation("ProjectClient")
+  projectsAsEndCustomer Project[] @relation("ProjectEndCustomer")
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId])
+}
+
+model Project {
+  id   String @id @default(cuid())
+  // Display name — defaults to the Vercel project or repo name, editable.
+  name String
+
+  // -- Vercel -----------------------------------------------------
+  vercelProjectId   String? @unique
+  vercelProjectName String?
+  vercelScopeSlug   String? // carl-dos-santos-projects | outerjoin-d44b79be
+  vercelScopeName   String? // "Carl Dos Santos' projects" | "OUTERJOIN"
+  productionUrl     String?
+
+  // -- Git --------------------------------------------------------
+  gitOwner      String? // CarlofSaints | OuterJoinZA
+  gitOwnerType  GitOwnerType?
+  gitRepo       String?
+  gitUrl        String?
+  gitPrivate    Boolean?      @default(true)
+  gitPushedAt   DateTime? // freshness — better "is this alive" signal than Vercel
+  gitOpenIssues Int?
+
+  // -- Counts (denormalised for fast grid rendering) --------------
+  envVarCount  Int @default(0)
+  domainCount  Int @default(0)
+  databaseCount Int @default(0)
+
+  // -- Capabilities: auto-detected, manually overridable -----------
+  sendsEmailAuto      Boolean  @default(false)
+  sendsEmailOverride  Boolean?
+  usesSharePointAuto     Boolean  @default(false)
+  usesSharePointOverride Boolean?
+  externalDataAuto       Boolean  @default(false)
+  externalDataOverride   Boolean?
+
+  // -- Manual assignment ------------------------------------------
+  stage         ProjectStage @default(DEVELOPMENT)
+  clientId      String?
+  client        Organization? @relation("ProjectClient", fields: [clientId], references: [id], onDelete: SetNull)
+  endCustomerId String?
+  endCustomer   Organization? @relation("ProjectEndCustomer", fields: [endCustomerId], references: [id], onDelete: SetNull)
+  notes         String?
+
+  // Hide from the grid without deleting (e.g. throwaway experiments).
+  hidden Boolean @default(false)
+
+  ownerId String?
+  owner   User?   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+
+  envVars     ProjectEnvVar[]
+  domains     ProjectDomain[]
+  databases   ProjectDatabase[]
+  connections ExternalConnection[]
+  signals     DetectionSignal[]
+
+  lastSyncedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([gitOwner, gitRepo])
+  @@index([clientId])
+  @@index([endCustomerId])
+  @@index([stage])
+}
+
+// Env var KEYS only — values are never fetched or stored.
+model ProjectEnvVar {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key       String
+  targets   String[] // production | preview | development
+  isSensitive Boolean @default(false)
+
+  @@unique([projectId, key])
+  @@index([projectId])
+}
+
+model ProjectDomain {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  domain    String
+  verified  Boolean @default(false)
+  isVercelDomain Boolean @default(false) // *.vercel.app vs a real custom domain
+  redirectTo     String?
+
+  @@unique([projectId, domain])
+  @@index([projectId])
+}
+
+model ProjectDatabase {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind      StoreKind
+  provider  String? // Neon | Upstash | Vercel Blob | Supabase ...
+  name      String
+  storeId   String?
+  // How we know about it — a linked Vercel store, or inferred from an env key.
+  inferred  Boolean   @default(false)
+
+  @@unique([projectId, name])
+  @@index([projectId])
+}
+
+// "Connects directly to external data?" — click to reveal these.
+model ExternalConnection {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  label     String // "MS SQL Server", "SAP", "Perigee API"
+  detail    String?
+  inferred  Boolean @default(false)
+
+  @@index([projectId])
+}
+
+// The evidence trail behind an auto-detected capability flag, so a surprising
+// tick in the grid can be explained rather than second-guessed.
+model DetectionSignal {
+  id         String       @id @default(cuid())
+  projectId  String
+  project    Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  capability Capability
+  source     SignalSource
+  evidence   String // "RESEND_API_KEY", "@microsoft/microsoft-graph-client"
+
+  @@unique([projectId, capability, evidence])
+  @@index([projectId])
+}
+
+// ---------------------------------------------------------------- ops
+
+model SyncRun {
+  id          String     @id @default(cuid())
+  status      SyncStatus @default(RUNNING)
+  startedAt   DateTime   @default(now())
+  finishedAt  DateTime?
+  projectsSeen Int       @default(0)
+  projectsCreated Int    @default(0)
+  projectsUpdated Int    @default(0)
+  error       String?
+  log         String?
+}
+
+// ---------------------------------------------------------------- auth (dormant)
+
+model User {
+  id          String  @id @default(cuid())
+  email       String? @unique
+  name        String?
+  avatarUrl   String?
+  githubLogin String? @unique
+  isAdmin     Boolean @default(false)
+
+  // Teammates connect their own Vercel token so the sync can see their scopes.
+  vercelTokenEnc String?
+
+  projects      Project[]
+  organizations Organization[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
