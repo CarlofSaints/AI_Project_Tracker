@@ -8,6 +8,14 @@ import {
   deleteProjectNote,
   updateProjectAssignment,
 } from "@/app/actions";
+import {
+  COLUMNS,
+  columnByKey,
+  defaultDirection,
+  filterProjects,
+  sortProjects,
+  type SortDirection,
+} from "@/lib/grid-view";
 
 type Capability = "EMAIL" | "SHAREPOINT" | "EXTERNAL_DATA";
 type Stage = "DEVELOPMENT" | "LIVE_ITERATING" | "HANDED_OVER" | "ARCHIVED";
@@ -90,18 +98,37 @@ export function ProjectGrid({
 }) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  // A null sortKey means "server order" (most recently pushed first), which is
+  // a genuinely useful third state rather than just the absence of a sort.
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [, startTransition] = useTransition();
   const router = useRouter();
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return projects;
-    return projects.filter((p) =>
-      [p.name, p.gitRepo, p.gitOwner, p.vercelProjectName, p.client?.name, p.endCustomer?.name]
-        .filter(Boolean)
-        .some((field) => field!.toLowerCase().includes(q)),
-    );
-  }, [projects, query]);
+  const filtered = useMemo(
+    () => sortProjects(filterProjects(projects, query), sortKey, sortDir),
+    [projects, query, sortKey, sortDir],
+  );
+
+  /** asc → desc → unsorted, so you can always get back to the default order. */
+  function toggleSort(key: string) {
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir(defaultDirection(columnByKey(key)?.type ?? "text"));
+      return;
+    }
+    const first = defaultDirection(columnByKey(key)?.type ?? "text");
+    if (sortDir === first) {
+      setSortDir(first === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(null);
+    }
+  }
+
+  const exportHref = `/api/export?${new URLSearchParams({
+    ...(query.trim() ? { q: query.trim() } : {}),
+    ...(sortKey ? { sort: sortKey, dir: sortDir } : {}),
+  })}`;
 
   function save(id: string, patch: Parameters<typeof updateProjectAssignment>[1]) {
     startTransition(async () => {
@@ -126,30 +153,67 @@ export function ProjectGrid({
           placeholder="Filter projects, repos, clients…"
           className="w-72 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-neutral-400 focus:border-[var(--brand)] focus:ring-1 focus:ring-[var(--brand)] dark:border-neutral-800 dark:bg-neutral-900"
         />
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">
-          {filtered.length} of {projects.length}
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">
+            {filtered.length} of {projects.length}
+          </span>
+          {/* A plain link, not fetch+blob — the browser handles the download and
+              reuses the credentials it already holds for this origin. */}
+          <a
+            href={exportHref}
+            className="rounded-lg border border-neutral-200 px-3 py-2 text-sm font-medium transition hover:border-[var(--brand)] hover:text-[var(--brand-text)] dark:border-neutral-700"
+          >
+            Export to Excel
+          </a>
+        </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+      {/* The scroll container needs a bounded height for a sticky header to have
+          anything to stick to — position:sticky resolves against the nearest
+          scrolling ancestor, and an unbounded div never scrolls. */}
+      <div className="max-h-[calc(100vh-19rem)] overflow-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
         <table className="w-full min-w-[1400px] text-sm">
           <thead>
-            <tr className="border-b border-neutral-200 text-left text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-              <th className="w-8 px-3 py-3" />
-              <th className="px-3 py-3 font-medium">Project</th>
-              <th className="px-3 py-3 font-medium">Owner / scope</th>
-              <th className="px-3 py-3 font-medium">Repo</th>
-              <th className="px-3 py-3 font-medium">Vercel</th>
-              <th className="px-3 py-3 font-medium">Deployed</th>
-              <th className="px-3 py-3 text-right font-medium">Env</th>
-              <th className="px-3 py-3 text-right font-medium">Domains</th>
-              <th className="px-3 py-3 text-right font-medium">DBs</th>
-              <th className="px-3 py-3 font-medium">Client</th>
-              <th className="px-3 py-3 font-medium">Customer</th>
-              <th className="px-3 py-3 text-center font-medium">Email</th>
-              <th className="px-3 py-3 text-center font-medium">SP</th>
-              <th className="px-3 py-3 text-center font-medium">Ext. data</th>
-              <th className="px-3 py-3 font-medium">Progress</th>
+            <tr className="text-left text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              {/* Tailwind's preflight sets border-collapse:collapse, under which a
+                  sticky cell's own border is dropped as the table collapses its
+                  borders. An inset shadow draws the same 1px rule and survives. */}
+              <th className="sticky top-0 z-10 w-8 bg-white px-3 py-3 shadow-[inset_0_-1px_0_#e5e5e5] dark:bg-neutral-900 dark:shadow-[inset_0_-1px_0_#262626]" />
+              {COLUMNS.map((column) => {
+                const active = sortKey === column.key;
+                const alignment =
+                  column.align === "right"
+                    ? "text-right"
+                    : column.align === "center"
+                      ? "text-center"
+                      : "text-left";
+                return (
+                  <th
+                    key={column.key}
+                    aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
+                    className={`sticky top-0 z-10 bg-white px-3 py-3 font-medium shadow-[inset_0_-1px_0_#e5e5e5] dark:bg-neutral-900 dark:shadow-[inset_0_-1px_0_#262626] ${alignment}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(column.key)}
+                      title={`Sort by ${column.label}`}
+                      className={`group inline-flex items-center gap-1 uppercase transition hover:text-[var(--brand-text)] ${
+                        active ? "text-[var(--brand-text)]" : ""
+                      }`}
+                    >
+                      {column.label}
+                      <span
+                        aria-hidden
+                        className={`text-[9px] ${
+                          active ? "" : "opacity-0 transition group-hover:opacity-40"
+                        }`}
+                      >
+                        {active && sortDir === "asc" ? "▲" : "▼"}
+                      </span>
+                    </button>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
