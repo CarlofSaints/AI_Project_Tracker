@@ -82,6 +82,14 @@ npm run dev
 > Vercel env vars marked **Sensitive** read back empty from `vercel env pull`.
 > An empty value there is not proof the variable is unset.
 
+### Schema on deploy
+
+The Vercel build runs `prisma db push` before `next build`, so a schema change
+goes live automatically the moment it lands on `main` — no separate migration
+step to remember. This means the build now needs `DATABASE_URL` to be set
+(it already is on Vercel). `db push` is additive-safe: a destructive change
+fails the build loudly rather than dropping data silently.
+
 ### Syncing
 
 - **Manually** — the "Sync now" button on the dashboard.
