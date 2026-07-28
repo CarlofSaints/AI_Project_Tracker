@@ -57,6 +57,11 @@ enum GitOwnerType {
   ORGANIZATION // e.g. OuterJoinZA
 }
 
+enum NoteAuthor {
+  CARL // typed into the UI by hand
+  ASSISTANT // written by Claude on Carl's behalf
+}
+
 enum SyncStatus {
   RUNNING
   SUCCESS
@@ -110,6 +115,10 @@ model Project {
   gitPushedAt   DateTime? // freshness — better "is this alive" signal than Vercel
   gitOpenIssues Int?
 
+  // Last production deployment on Vercel — sync-owned, from the project's
+  // production target. Null until it has shipped to prod at least once.
+  lastDeployedAt DateTime?
+
   // -- Counts (denormalised for fast grid rendering) --------------
   envVarCount  Int @default(0)
   domainCount  Int @default(0)
@@ -142,6 +151,7 @@ model Project {
   databases   ProjectDatabase[]
   connections ExternalConnection[]
   signals     DetectionSignal[]
+  noteEntries ProjectNote[]
 
   lastSyncedAt DateTime?
   createdAt    DateTime  @default(now())
@@ -217,6 +227,21 @@ model DetectionSignal {
   evidence   String // "RESEND_API_KEY", "@microsoft/microsoft-graph-client"
 
   @@unique([projectId, capability, evidence])
+  @@index([projectId])
+}
+
+// A timestamped note log on a project — distinct from the single free-text
+// `Project.notes` field. Every entry records who wrote it (Carl by hand, or the
+// assistant on his behalf) and exactly when, so the history reads back like a
+// running journal. Never touched by the sync.
+model ProjectNote {
+  id        String     @id @default(cuid())
+  projectId String
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  body      String
+  author    NoteAuthor @default(CARL)
+  createdAt DateTime   @default(now())
+
   @@index([projectId])
 }
 
