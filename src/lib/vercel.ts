@@ -113,6 +113,38 @@ export class VercelClient {
   }
 
   /**
+   * FOCUS v1.3 billing charges for a scope, as newline-delimited JSON.
+   *
+   * This is the one Vercel endpoint that ties spend to a project: every row
+   * carries the project id and name in its `Tags` object, so a charge can be
+   * attributed without any mapping table of our own.
+   *
+   * Returned as raw text rather than parsed — the response is JSONL, not JSON,
+   * and `res.json()` would choke on the second line. It also needs a token with
+   * a billing-capable role on the team, so a 403 here is a permissions problem
+   * rather than a bad request.
+   */
+  async billingChargesJsonl(from: Date, to: Date, teamId?: string): Promise<string> {
+    const url = new URL("/v1/billing/charges", API);
+    url.searchParams.set("from", from.toISOString());
+    url.searchParams.set("to", to.toISOString());
+    if (teamId) url.searchParams.set("teamId", teamId);
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `Vercel ${res.status} on /v1/billing/charges: ${body.slice(0, 300)}`,
+      );
+    }
+    return res.text();
+  }
+
+  /**
    * Marketplace + first-party stores for a scope.
    *
    * This endpoint is less stable than the rest of the API and the shape of

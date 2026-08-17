@@ -23,6 +23,21 @@ export interface GitHubRepo {
   owner: { login: string; type: string }; // type: "User" | "Organization"
 }
 
+/** A line item from GET /{users|organizations}/{owner}/settings/billing/usage. */
+export interface GitHubUsageItem {
+  date?: string;
+  product?: string; // "Actions" | "Packages" | "Copilot" | "Codespaces" | "Shared Storage"
+  sku?: string; // "Actions Linux"
+  quantity?: number;
+  unitType?: string; // "minutes" | "GigabyteHours"
+  pricePerUnit?: number;
+  grossAmount?: number;
+  discountAmount?: number;
+  netAmount?: number;
+  organizationName?: string;
+  repositoryName?: string;
+}
+
 export class GitHubClient {
   constructor(private token: string) {}
 
@@ -60,6 +75,35 @@ export class GitHubClient {
       if (batch.length < 100) break;
     }
     return out;
+  }
+
+  /**
+   * Metered billing usage for a month, from the enhanced billing platform.
+   *
+   * The reason this is worth calling at all: every line item carries
+   * `repositoryName`, so Actions minutes and Packages storage attribute to a
+   * repo — and the inventory already knows which project each repo belongs to.
+   *
+   * Personal accounts and organisations live on different paths, mirroring the
+   * repo endpoints. Requires a token with billing read access; anything else
+   * comes back 403 and the caller turns that into a visible warning rather than
+   * a zero.
+   */
+  async billingUsage(
+    owner: string,
+    isOrg: boolean,
+    year: number,
+    month: number,
+  ): Promise<GitHubUsageItem[]> {
+    const base = isOrg
+      ? `/organizations/${owner}/settings/billing/usage`
+      : `/users/${owner}/settings/billing/usage`;
+
+    const data = await this.get<{ usageItems?: GitHubUsageItem[] } | GitHubUsageItem[]>(
+      `${base}?year=${year}&month=${month}`,
+    );
+    if (Array.isArray(data)) return data;
+    return data.usageItems ?? [];
   }
 
   /** Dependency names from package.json, or [] if the repo has none. */

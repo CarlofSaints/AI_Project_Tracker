@@ -77,16 +77,87 @@ npm run dev
 | `VERCEL_TOKEN` | https://vercel.com/account/tokens — needs access to both scopes. |
 | `GITHUB_TOKEN` | Classic token with `repo` + `read:org`. |
 | `GITHUB_OWNERS` | `CarlofSaints:user,OuterJoinZA:org` — the `:org` suffix matters, org repos live on a different endpoint. |
-| `CRON_SECRET` | Guards `/api/sync`. |
+| `ANTHROPIC_ADMIN_KEY` | Billing only. An **Admin** key (`sk-ant-admin01-…`), not a normal API key. See Billing below. |
+| `RESEND_API_KEY` | Billing only. Needs permission to list emails. |
+| `CRON_SECRET` | Guards `/api/sync` and `/api/billing/ingest`. |
 
 > Vercel env vars marked **Sensitive** read back empty from `vercel env pull`.
 > An empty value there is not proof the variable is unset.
+
+> `.env.example` is matched by the `.env*` rule in `.gitignore`, so it is not in
+> the repo — this table is the authoritative list.
 
 ### Syncing
 
 - **Manually** — the "Sync now" button on the dashboard.
 - **On a schedule** — `vercel.json` registers a daily 05:00 UTC cron against
   `/api/sync`, which requires `Authorization: Bearer $CRON_SECRET`.
+
+## Billing
+
+Tracks what each project costs at each third party, and rolls that up into what
+to charge each client. `/billing`, one calendar month at a time.
+
+### How much each vendor can actually tell you
+
+This is the part worth being honest about, because the answer differs per vendor
+and a billing screen that hides the difference is worse than no billing screen.
+
+| Vendor | Attribution | How |
+| --- | --- | --- |
+| **Vercel** | Exact | `GET /v1/billing/charges` returns FOCUS v1.3 rows whose `Tags` carry the Vercel **project id** — a direct join onto `Project.vercelProjectId`. Nothing to maintain. |
+| **GitHub** | Exact | `GET /{users\|organizations}/{owner}/settings/billing/usage` returns line items carrying `repositoryName` — joined onto `gitOwner`/`gitRepo`. |
+| **Anthropic** | Only if you set it up | The cost report's finest grain is the **workspace**. One workspace per project (or per client), each mapped on the billing page, or all Claude spend is one undifferentiated number. |
+| **Resend** | Derived | No usage endpoint. Sends are counted from `GET /emails` and attributed by **sending domain**. |
+| **Google / anything else** | Manual | Entered by hand. Never touched by a collector. |
+
+Two prerequisites are on you, not the code:
+
+- **Anthropic** — the Admin API is unavailable to individual accounts. The
+  account must be an Organization (Console → Settings → Organization), and the
+  key must be an Admin key. Attribution then needs one workspace per project.
+- **GitHub** — the token needs billing read on top of repo read. Without it the
+  endpoint answers **404**, not 403.
+
+### Metered vs base fee
+
+- **Metered** cost is caused by a project and is attributed to it.
+- **Base fees** — a Pro seat, a plan minimum — are caused by the business. There
+  is no honest formula that divides them, so they are **split across clients by
+  hand** on the billing page. Anything you don't allocate is shown as absorbed
+  rather than quietly billed to someone.
+
+On a plan with an included allowance, metered usage shows a cost of zero against
+a real quantity, and the money sits in the plan's base fee. That is correct, not
+missing data: the quantities tell you who is consuming the plan, and the base fee
+is what you split.
+
+### Money
+
+Every cost is stored in **USD**, because that is what the vendors bill. Each
+period carries **one** USD→ZAR rate (auto-fetched from frankfurter.app, or typed
+in), so re-opening March's invoice in July still shows March's rand.
+
+Markup is per client in basis points, falling back to a house default. Closing a
+month freezes the rate and each client's markup into `ClientPeriodTerms` — the
+figures themselves are never persisted, so correcting an allocation or a mapping
+is reflected everywhere at once, while a sent invoice cannot move underneath you.
+
+`src/lib/billing/rollup.ts` is the single source of truth for every figure: the
+page, the client bills and the Excel export all read from it, exactly as the grid
+and its export both read from `grid-view.ts`.
+
+### Collecting
+
+- **Manually** — "Collect costs" on `/billing`.
+- **On a schedule** — a daily 06:00 UTC cron against `/api/billing/ingest`. It
+  collects the current month every run, plus the previous month for the first
+  ten days of a new one, because vendors restate figures as a month settles.
+
+Each vendor's slice of a month is **replaced** on every run, never appended, so
+re-running is safe. Hand-entered lines (`source: manual`) are never touched.
+Every attempt writes a `CostIngestRun` — including the ones that find nothing,
+because "collected zero" and "never ran" look identical on a dashboard.
 
 ## Multi-user (schema ready, not wired up)
 

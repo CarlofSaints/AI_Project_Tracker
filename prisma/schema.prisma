@@ -68,6 +68,32 @@ enum SyncStatus {
   FAILED
 }
 
+// Third parties we pay. OTHER carries its real name in CostLine.vendorLabel so
+// a one-off supplier never needs a schema change to be billed.
+enum Vendor {
+  VERCEL
+  GITHUB
+  ANTHROPIC
+  RESEND
+  GOOGLE
+  OTHER
+}
+
+// METERED costs are caused by a specific project and attributed to it.
+// BASE_FEE costs (a Pro seat, a plan minimum) are caused by the business, not a
+// project — they are split across CLIENTS by hand, see SharedCostAllocation.
+enum CostKind {
+  METERED
+  BASE_FEE
+}
+
+enum IngestStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL // some vendors succeeded, some failed
+  FAILED
+}
+
 // ---------------------------------------------------------------- core
 
 model Organization {
@@ -84,6 +110,14 @@ model Organization {
 
   projectsAsClient      Project[] @relation("ProjectClient")
   projectsAsEndCustomer Project[] @relation("ProjectEndCustomer")
+
+  // Uplift applied to this client's third-party costs, in basis points
+  // (1500 = 15%). Null inherits BillingSettings.defaultMarkupBasisPoints, so
+  // changing the house rate moves every client that hasn't been given its own.
+  markupBasisPoints Int?
+
+  sharedCostAllocations SharedCostAllocation[]
+  periodTerms           ClientPeriodTerms[]
 
   createdById String?
   createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -152,6 +186,8 @@ model Project {
   connections ExternalConnection[]
   signals     DetectionSignal[]
   noteEntries ProjectNote[]
+  costLines   CostLine[]
+  vendorLinks VendorProjectLink[]
 
   lastSyncedAt DateTime?
   createdAt    DateTime  @default(now())
@@ -245,7 +281,205 @@ model ProjectNote {
   @@index([projectId])
 }
 
+// ---------------------------------------------------------------- billing
+//
+// The chain is: CostLine (what a vendor charged) → rollup → what a client owes.
+//
+//  * Every cost is stored in USD, because that is the currency every vendor
+//    actually bills in. ZAR is derived at display time from the ONE rate stored
+//    on the period, so re-opening a March invoice in July shows March's rand.
+//  * Nothing downstream is persisted. Project totals, client totals, markup and
+//    the ZAR figures are all computed from these tables by src/lib/billing/
+//    rollup.ts on every read. A saved artefact would go stale the moment an
+//    allocation or a rate was corrected.
+//  * Closing a period freezes the inputs instead (rate + ClientPeriodTerms), so
+//    a historical invoice cannot move under you while an open one stays live.
+
+// One calendar month of billing. Costs land in the period their charge date
+// falls in, not the period they were ingested in.
+model BillingPeriod {
+  id    String @id @default(cuid())
+  year  Int
+  month Int // 1-12
+  label String @unique // "2026-08" — the human-facing key, and how URLs address it
+
+  // USD → ZAR for this month, locked once entered. Null means the period has no
+  // rate yet and the UI must show USD only rather than guess.
+  usdToZar   Decimal? @db.Decimal(14, 6)
+  rateSource String? // "manual" | "frankfurter.app"
+  rateSetAt  DateTime?
+
+  // A closed period is read-only: no re-ingest, no allocation edits, and the
+  // markup of every client has been materialised into ClientPeriodTerms.
+  closed   Boolean   @default(false)
+  closedAt DateTime?
+
+  costLines   CostLine[]
+  allocations SharedCostAllocation[]
+  terms       ClientPeriodTerms[]
+  ingestRuns  CostIngestRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([year, month])
+  @@index([year, month])
+}
+
+// A single charge from a third party.
+model CostLine {
+  id       String        @id @default(cuid())
+  periodId String
+  period   BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  vendor      Vendor
+  vendorLabel String? // only for OTHER — e.g. "Twilio"
+  kind        CostKind
+
+  // Set for METERED, always null for BASE_FEE. Null on a METERED line means the
+  // vendor reported usage we could not tie to a project — the UI surfaces those
+  // loudly rather than quietly dropping them into the shared bucket.
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  // When a METERED line arrives with an identity we could not resolve, the
+  // identity is kept here rather than discarded. That is what lets the billing
+  // page say "$47 of Claude spend is in workspace wrkspc_01ABC — map it" and
+  // offer to fix it, instead of showing an unexplained shortfall.
+  unresolvedKey   String?
+  unresolvedLabel String?
+
+  // What was bought: "Fluid Compute", "Actions Linux", "claude-opus-5", "Emails".
+  service  String
+  quantity Decimal? @db.Decimal(24, 6)
+  unit     String? // "minutes" | "GB-hours" | "tokens" | "emails" | "requests"
+
+  // Always USD. Zero is a real value (a free-tier line still proves usage).
+  costUsd Decimal @db.Decimal(16, 6)
+
+  // Provenance. `source` names the collector, `externalRef` the vendor's own id
+  // for the row, and `raw` keeps the original payload so a surprising number can
+  // be explained without re-querying an API whose window may have moved on.
+  source      String
+  externalRef String?
+  raw         Json?
+
+  chargedOn  DateTime // the day the vendor dated the charge
+  ingestedAt DateTime @default(now())
+
+  // Deterministic per (period, vendor, project, service, day, ref). Re-running
+  // an ingest overwrites rather than duplicating — the collectors are re-run
+  // daily for the open month, so append-only would multiply every figure.
+  dedupeKey String
+
+  @@unique([periodId, dedupeKey])
+  @@index([periodId, vendor])
+  @@index([projectId])
+  @@index([periodId, kind])
+}
+
+// How a vendor's BASE_FEE for one period is divided between clients.
+//
+// Deliberately manual and deliberately per-CLIENT. Carl carries context about
+// who is getting value out of a seat that no formula in this codebase has —
+// so the split is an input, not a calculation. Shares that don't reach 100%
+// are not an error: the remainder is absorbed by the business, and the UI says
+// so out loud.
+model SharedCostAllocation {
+  id       String        @id @default(cuid())
+  periodId String
+  period   BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  vendor   Vendor
+  clientId String
+  client   Organization @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  shareBasisPoints Int // 0-10000; 2500 = a quarter of that vendor's base fees
+  note             String?
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([periodId, vendor, clientId])
+  @@index([periodId])
+}
+
+// The markup that applied to a client in a given period. Written lazily on
+// close so that changing a client's rate today cannot rewrite an invoice you
+// have already sent.
+model ClientPeriodTerms {
+  id       String        @id @default(cuid())
+  periodId String
+  period   BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  clientId String
+  client   Organization  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  markupBasisPoints Int
+
+  @@unique([periodId, clientId])
+}
+
+// Maps a vendor's own identity for a project onto ours.
+//
+// Vercel and GitHub don't need this — their billing data already names the
+// project and the repo. Anthropic reports by workspace or API key, Resend by
+// sending domain, Google by GCP project: all opaque strings that only Carl can
+// tie to a project, and without which their spend cannot be attributed at all.
+model VendorProjectLink {
+  id            String  @id @default(cuid())
+  vendor        Vendor
+  externalId    String // workspace id, api key id, sending domain, GCP project id
+  externalLabel String? // what the vendor calls it, for the picker
+  projectId     String
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([vendor, externalId])
+  @@index([projectId])
+}
+
+// Single-row config. Keyed by a fixed id so there can only ever be one.
+model BillingSettings {
+  id String @id @default("singleton")
+
+  // House markup for any client without its own rate. 1500 = 15%.
+  defaultMarkupBasisPoints Int @default(1500)
+
+  // Resend bills a plan fee, not per-email, so an email has no intrinsic cost.
+  // Set a rate here to price sends as metered usage; leave at 0 to treat Resend
+  // as a pure base fee and let the per-client allocation carry it.
+  resendUsdPerEmail Decimal @default(0) @db.Decimal(12, 8)
+
+  // Currency shown alongside USD on invoices.
+  billingCurrency String @default("ZAR")
+
+  updatedAt DateTime @updatedAt
+}
+
 // ---------------------------------------------------------------- ops
+
+// One vendor's collection attempt for one period. Written even when nothing
+// comes back: a collector that silently returns zero rows and a collector that
+// was never called look identical on a dashboard, and only one of them is fine.
+model CostIngestRun {
+  id       String        @id @default(cuid())
+  periodId String
+  period   BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  vendor       Vendor
+  status       IngestStatus @default(RUNNING)
+  startedAt    DateTime     @default(now())
+  finishedAt   DateTime?
+  linesWritten Int          @default(0)
+  linesRemoved Int          @default(0)
+  costUsdTotal Decimal      @default(0) @db.Decimal(16, 6)
+  unmapped     Int          @default(0) // rows the vendor gave us that we could not attribute
+  error        String?
+  log          String?
+
+  @@index([periodId, vendor])
+  @@index([startedAt])
+}
 
 model SyncRun {
   id          String     @id @default(cuid())
