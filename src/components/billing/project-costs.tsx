@@ -22,7 +22,8 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
     ? all.filter(
         (project) =>
           project.name.toLowerCase().includes(needle) ||
-          (project.clientName ?? "").toLowerCase().includes(needle),
+          (project.clientName ?? "").toLowerCase().includes(needle) ||
+          (project.endCustomerName ?? "").toLowerCase().includes(needle),
       )
     : all;
 
@@ -50,7 +51,7 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
           type="search"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          placeholder="Filter projects or clients"
+          placeholder="Filter by project, client or customer"
           className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
         />
       </div>
@@ -59,7 +60,8 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
         <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
           <tr className="border-b border-neutral-200 dark:border-neutral-800">
             <th className="px-5 py-2 font-medium">Project</th>
-            <th className="px-5 py-2 font-medium">Client</th>
+            <th className="px-5 py-2 font-medium">Client (you invoice)</th>
+            <th className="px-5 py-2 font-medium">End customer (work is for)</th>
             <th className="px-5 py-2 font-medium">Vendors</th>
             <th className="px-5 py-2 text-right font-medium">Cost</th>
           </tr>
@@ -96,6 +98,15 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
                     )}
                   </td>
                   <td className="px-5 py-2.5">
+                    {project.endCustomerName ? (
+                      <span className="rounded bg-[var(--brand-2-soft)] px-1.5 py-0.5 text-xs font-medium text-[var(--brand-2-text)]">
+                        {project.endCustomerName}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-neutral-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-2.5">
                     <span className="flex flex-wrap gap-1">
                       {project.byVendor.map((vendor) => (
                         <span
@@ -118,7 +129,7 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
                 </tr>
                 {isOpen ? (
                   <tr className="bg-neutral-50 dark:bg-neutral-950/40">
-                    <td colSpan={4} className="px-5 py-3">
+                    <td colSpan={5} className="px-5 py-3">
                       <table className="w-full text-xs">
                         <thead className="text-left text-neutral-500">
                           <tr>

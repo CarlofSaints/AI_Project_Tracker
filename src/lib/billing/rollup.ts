@@ -50,6 +50,13 @@ export interface ProjectCost {
   name: string;
   clientId: string | null;
   clientName: string | null;
+  /**
+   * Who the work was actually for. Carried all the way through to the invoice
+   * because "iRam owes $40" is not a billable line — "iRam owes $40, for
+   * SnoMaster" is. The client pays; the end customer is what they recognise.
+   */
+  endCustomerId: string | null;
+  endCustomerName: string | null;
   costUsd: number;
   byVendor: Array<{ vendor: Vendor; vendorLabel: string; costUsd: number }>;
   services: ServiceLine[];
@@ -155,6 +162,8 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
             name: true,
             clientId: true,
             client: { select: { id: true, name: true } },
+            endCustomerId: true,
+            endCustomer: { select: { id: true, name: true } },
           },
         },
       },
@@ -216,6 +225,8 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
       name: line.project.name,
       clientId: line.project.clientId,
       clientName: line.project.client?.name ?? null,
+      endCustomerId: line.project.endCustomerId,
+      endCustomerName: line.project.endCustomer?.name ?? null,
       costUsd: 0,
       byVendor: [],
       services: [],

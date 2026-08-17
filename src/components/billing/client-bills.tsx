@@ -111,12 +111,38 @@ export function ClientBills({
                     <div>
                       <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                         Direct project cost — {formatUsd(client.directCostUsd)}
+                        {(() => {
+                          // One line naming every end customer the client is
+                          // being billed for, so the invoice can be described
+                          // without expanding each project.
+                          const customers = [
+                            ...new Set(
+                              client.projects
+                                .map((p) => p.endCustomerName)
+                                .filter((name): name is string => Boolean(name)),
+                            ),
+                          ];
+                          return customers.length > 0 ? (
+                            <span className="ml-1 font-normal normal-case text-neutral-400">
+                              · for {customers.join(", ")}
+                            </span>
+                          ) : null;
+                        })()}
                       </h4>
                       <div className="mt-2 space-y-3">
                         {client.projects.map((project) => (
                           <div key={project.projectId}>
                             <div className="flex items-baseline justify-between gap-3">
-                              <span className="text-sm font-medium">{project.name}</span>
+                              <span className="text-sm font-medium">
+                                {project.name}
+                                {/* The client pays, but the end customer is the
+                                    name they'll recognise on an invoice line. */}
+                                {project.endCustomerName ? (
+                                  <span className="ml-2 rounded bg-[var(--brand-2-soft)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--brand-2-text)]">
+                                    for {project.endCustomerName}
+                                  </span>
+                                ) : null}
+                              </span>
                               <span className="text-sm tabular-nums">
                                 {formatUsd(project.costUsd)}
                               </span>

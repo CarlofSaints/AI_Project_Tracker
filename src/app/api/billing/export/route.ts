@@ -44,6 +44,9 @@ export async function GET(request: Request) {
   });
   invoices.columns = [
     { header: "Client", key: "client", width: 30 },
+    // Who the work was for. A client invoice covering three end customers is
+    // unreadable without this, and it's the first thing they'll ask about.
+    { header: "End customers", key: "customers", width: 34 },
     { header: "Projects", key: "projects", width: 10 },
     { header: "Direct cost (USD)", key: "direct", width: 18 },
     { header: "Share of shared (USD)", key: "shared", width: 20 },
@@ -56,6 +59,14 @@ export async function GET(request: Request) {
   for (const client of rollup.clients) {
     invoices.addRow({
       client: client.name,
+      customers:
+        [
+          ...new Set(
+            client.projects
+              .map((p) => p.endCustomerName)
+              .filter((name): name is string => Boolean(name)),
+          ),
+        ].join(", ") || null,
       projects: client.projects.length,
       direct: client.directCostUsd,
       shared: client.sharedCostUsd,
@@ -101,7 +112,8 @@ export async function GET(request: Request) {
   });
   byProject.columns = [
     { header: "Project", key: "project", width: 34 },
-    { header: "Client", key: "client", width: 26 },
+    { header: "Client (you invoice)", key: "client", width: 26 },
+    { header: "End customer (work is for)", key: "customer", width: 26 },
     { header: "Vendor", key: "vendor", width: 14 },
     { header: "Service", key: "service", width: 44 },
     { header: "Quantity", key: "quantity", width: 16 },
@@ -114,6 +126,7 @@ export async function GET(request: Request) {
       byProject.addRow({
         project: project.name,
         client: project.clientName ?? "— no client —",
+        customer: project.endCustomerName ?? "",
         vendor: service.vendorLabel,
         service: service.service,
         quantity: service.quantity,
