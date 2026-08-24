@@ -183,6 +183,8 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
   // ------------------------------------------------------- metered by project
   const projectMap = new Map<string, ProjectCost>();
   const unattributedMap = new Map<string, UnattributedBucket>();
+  /** Largest single line seen per bucket, so the example names the real cost. */
+  const sampleCost = new Map<string, number>();
   const baseFeeTotals = new Map<Vendor, number>();
 
   let meteredUsd = 0;
@@ -216,6 +218,17 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
       };
       bucket.costUsd += cost;
       bucket.lineCount += 1;
+
+      // The example service has to be the one carrying the money. Taking the
+      // first line seen labelled a $26.42 bucket "e.g. Observability Plus" — a
+      // line that cost exactly nothing — while the actual spend was the Pro
+      // seats. An example that points away from the money is worse than none.
+      const best = sampleCost.get(key) ?? -1;
+      if (cost > best) {
+        sampleCost.set(key, cost);
+        bucket.sampleService = line.service;
+      }
+
       unattributedMap.set(key, bucket);
       continue;
     }

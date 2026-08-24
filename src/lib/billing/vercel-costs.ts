@@ -63,12 +63,27 @@ function pickTag(tags: Record<string, string> | undefined, keys: string[]): stri
 /**
  * FOCUS charge categories, mapped onto our two kinds.
  *
- * Only Usage is caused by a project. A Purchase (the Pro seat), Tax, Credit or
- * Adjustment is caused by the business, so it lands in the shared bucket to be
- * split across clients by hand.
+ * A Purchase, Tax, Credit or Adjustment is caused by the business, so it lands
+ * in the shared bucket to be split across clients by hand.
+ *
+ * ⚠️ The category alone is not enough, and assuming it was cost real money.
+ * Vercel reports the **Pro seat subscription as ChargeCategory "Usage" with an
+ * empty Tags object** — not as a Purchase, as this code originally assumed. That
+ * left $19.86 of seat fees classed as metered usage belonging to no project,
+ * sitting in "Unidentified" where no client bill could ever reach it. Together
+ * with untagged Blob and transfer rows it was 57% of the month.
+ *
+ * So the real test is whether Vercel told us which project caused the row. A
+ * Usage row carrying no project identity at all is not caused by a project,
+ * whatever it is called, and belongs in the shared bucket.
+ *
+ * A row that DOES carry an identity we cannot match stays metered on purpose:
+ * that is a mapping problem to be shown loudly, not a cost to quietly socialise
+ * across every client.
  */
-function kindFor(category: string | undefined) {
-  return category === "Usage" ? ("METERED" as const) : ("BASE_FEE" as const);
+function kindFor(category: string | undefined, hasProjectIdentity: boolean) {
+  if (category !== "Usage") return "BASE_FEE" as const;
+  return hasProjectIdentity ? ("METERED" as const) : ("BASE_FEE" as const);
 }
 
 export async function collectVercel(window: PeriodWindow): Promise<CollectResult> {
@@ -109,13 +124,14 @@ export async function collectVercel(window: PeriodWindow): Promise<CollectResult
     const rows = parseJsonl(jsonl);
     let scopeCost = 0;
     let attributed = 0;
+    let sharedCost = 0;
 
     for (const row of rows) {
       const cost = numberOr(row.BilledCost, 0);
       const category = row.ChargeCategory;
-      const kind = kindFor(category);
       const projectId = pickTag(row.Tags, PROJECT_ID_KEYS);
       const projectName = pickTag(row.Tags, PROJECT_NAME_KEYS);
+      const kind = kindFor(category, Boolean(projectId || projectName));
 
       const chargedOn = row.ChargePeriodStart
         ? new Date(row.ChargePeriodStart)
@@ -127,6 +143,7 @@ export async function collectVercel(window: PeriodWindow): Promise<CollectResult
       if (cost === 0 && (quantity === null || quantity === 0)) continue;
 
       if (kind === "METERED" && projectId) attributed++;
+      if (kind === "BASE_FEE") sharedCost += cost;
       scopeCost += cost;
 
       lines.push({
@@ -166,7 +183,8 @@ export async function collectVercel(window: PeriodWindow): Promise<CollectResult
     }
 
     log.push(
-      `${team.slug}: ${rows.length} charge rows, ${attributed} tied to a project, $${scopeCost.toFixed(2)} billed.`,
+      `${team.slug}: ${rows.length} charge rows, ${attributed} tied to a project, ` +
+        `$${sharedCost.toFixed(2)} of $${scopeCost.toFixed(2)} shared (untagged by Vercel).`,
     );
   }
 
