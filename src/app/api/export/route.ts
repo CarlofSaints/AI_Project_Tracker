@@ -4,7 +4,9 @@ import { prisma } from "@/lib/db";
 import {
   COLUMNS,
   STAGE_LABELS,
+  filterByAssignment,
   filterProjects,
+  parseAssignmentFilter,
   sortProjects,
   type SortDirection,
 } from "@/lib/grid-view";
@@ -20,9 +22,12 @@ export async function GET(request: Request) {
   const query = params.get("q") ?? "";
   const sort = params.get("sort");
   const direction: SortDirection = params.get("dir") === "asc" ? "asc" : "desc";
+  const assignment = parseAssignmentFilter(params.get("assignment"));
+  // The grid hides removed projects unless asked; the file follows suit.
+  const includeHidden = params.get("hidden") === "1";
 
   const projects = await prisma.project.findMany({
-    where: { hidden: false },
+    where: includeHidden ? undefined : { hidden: false },
     orderBy: [{ gitPushedAt: { sort: "desc", nulls: "last" } }, { name: "asc" }],
     include: {
       client: { select: { name: true } },
@@ -33,8 +38,12 @@ export async function GET(request: Request) {
     },
   });
 
-  // Same filter and sort the grid applied, so the file matches the screen.
-  const rows = sortProjects(filterProjects(projects, query), sort, direction);
+  // Same filters and sort the grid applied, so the file matches the screen.
+  const rows = sortProjects(
+    filterByAssignment(filterProjects(projects, query), assignment),
+    sort,
+    direction,
+  );
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "AI Project CRM";

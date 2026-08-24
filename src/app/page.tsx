@@ -8,8 +8,10 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const [projects, organizations, lastSync] = await Promise.all([
+    // Hidden projects are fetched too. The grid keeps them out of sight by
+    // default but can show them again on demand — a project you can hide and
+    // never see again is one you can never bring back.
     prisma.project.findMany({
-      where: { hidden: false },
       orderBy: [{ gitPushedAt: { sort: "desc", nulls: "last" } }, { name: "asc" }],
       include: {
         client: { select: { id: true, name: true } },
@@ -31,10 +33,15 @@ export default async function DashboardPage() {
     prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" } }),
   ]);
 
+  // The headline numbers count what's actually in play. A hidden project is one
+  // he has said he no longer wants counted, so it stays out of the stat cards
+  // even while the grid can be asked to show it.
+  const visible = projects.filter((p) => !p.hidden);
+
   // Client and Customer are roles held on a project, not types of org — so the
   // counts are distinct orgs appearing in each role, and one org can be in both.
-  const clientIds = new Set(projects.map((p) => p.clientId).filter(Boolean));
-  const customerIds = new Set(projects.map((p) => p.endCustomerId).filter(Boolean));
+  const clientIds = new Set(visible.map((p) => p.clientId).filter(Boolean));
+  const customerIds = new Set(visible.map((p) => p.endCustomerId).filter(Boolean));
 
   return (
     <div className="space-y-8">
@@ -53,7 +60,7 @@ export default async function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
           label="Projects"
-          value={projects.length}
+          value={visible.length}
           hint="Across all scopes"
           accent="gradient"
         />

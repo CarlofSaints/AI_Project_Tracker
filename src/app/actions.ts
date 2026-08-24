@@ -93,14 +93,79 @@ export async function createOrganization(formData: FormData) {
   return { ok: true as const };
 }
 
+/**
+ * Edit an organisation in place. Only the keys actually present in `patch` are
+ * touched, so a caller that sends just a name can never blank the notes.
+ * Renaming re-derives the slug, and both name and slug are checked against
+ * every OTHER organisation so a rename can't collide its way into a 500.
+ */
 export async function updateOrganization(
   id: string,
   patch: { name?: string; notes?: string | null; website?: string | null; parentId?: string | null },
 ) {
-  const data = patch.name ? { ...patch, slug: slugify(patch.name) } : patch;
+  const data: {
+    name?: string;
+    slug?: string;
+    notes?: string | null;
+    website?: string | null;
+    parentId?: string | null;
+  } = {};
+
+  if (patch.name !== undefined) {
+    const name = patch.name.trim();
+    if (!name) return { ok: false as const, error: "Name is required" };
+
+    const slug = slugify(name);
+    const clash = await prisma.organization.findFirst({
+      where: { AND: [{ id: { not: id } }, { OR: [{ name }, { slug }] }] },
+      select: { name: true },
+    });
+    if (clash) return { ok: false as const, error: `"${clash.name}" already exists` };
+
+    data.name = name;
+    data.slug = slug;
+  }
+
+  if (patch.website !== undefined) data.website = patch.website?.trim() || null;
+  if (patch.notes !== undefined) data.notes = patch.notes?.trim() || null;
+
+  if (patch.parentId !== undefined) {
+    const parentId = patch.parentId || null;
+    if (parentId === id) {
+      return { ok: false as const, error: "An organisation cannot sit under itself" };
+    }
+    if (parentId) {
+      // Walk up the proposed parent's ancestry. If we meet this organisation on
+      // the way, the edit would close the chain into a loop and anything that
+      // follows `parent` would spin forever.
+      const seen = new Set<string>([id]);
+      let cursor: string | null = parentId;
+      while (cursor) {
+        if (seen.has(cursor)) {
+          return {
+            ok: false as const,
+            error:
+              "That would make a loop — the organisation you picked already sits under this one",
+          };
+        }
+        seen.add(cursor);
+        const next: { parentId: string | null } | null = await prisma.organization.findUnique({
+          where: { id: cursor },
+          select: { parentId: true },
+        });
+        cursor = next?.parentId ?? null;
+      }
+    }
+    data.parentId = parentId;
+  }
+
+  if (Object.keys(data).length === 0) return { ok: true as const };
+
   await prisma.organization.update({ where: { id }, data });
   revalidatePath("/organizations");
   revalidatePath("/");
+  revalidatePath("/billing");
+  return { ok: true as const };
 }
 
 /**

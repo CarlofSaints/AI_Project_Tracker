@@ -75,3 +75,14 @@ select option {
 select option:checked {
   font-weight: 600;
 }
+
+/*
+ * The project grid uses table-layout:fixed so its columns can be dragged to a
+ * width and stay there. Fixed layout does not clip, though — a repo name wider
+ * than its column would paint straight over the neighbouring cell. Clipping at
+ * the cell keeps a narrow column merely short rather than scrambled.
+ */
+.grid-fixed th,
+.grid-fixed td {
+  overflow: hidden;
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   addProjectNote,
@@ -9,13 +9,23 @@ import {
   updateProjectAssignment,
 } from "@/app/actions";
 import {
+  ASSIGNMENT_FILTERS,
+  CHEVRON_COLUMN_WIDTH,
   COLUMNS,
+  clampColumnWidth,
   columnByKey,
+  defaultColumnWidths,
   defaultDirection,
+  filterByAssignment,
   filterProjects,
+  matchesAssignment,
   sortProjects,
+  type AssignmentFilter,
   type SortDirection,
 } from "@/lib/grid-view";
+
+/** Column widths are a per-browser preference, so they live in localStorage. */
+const WIDTHS_STORAGE_KEY = "ai-project-tracker:grid-column-widths:v1";
 
 type Capability = "EMAIL" | "SHAREPOINT" | "EXTERNAL_DATA";
 type Stage = "DEVELOPMENT" | "LIVE_ITERATING" | "HANDED_OVER" | "ARCHIVED";
@@ -44,6 +54,7 @@ export interface GridProject {
   domainCount: number;
   databaseCount: number;
   stage: Stage;
+  hidden: boolean;
   clientId: string | null;
   endCustomerId: string | null;
   sendsEmailAuto: boolean;
@@ -102,13 +113,130 @@ export function ProjectGrid({
   // a genuinely useful third state rather than just the absence of a sort.
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
+  const [assignment, setAssignment] = useState<AssignmentFilter>("all");
+  const [showHidden, setShowHidden] = useState(false);
+  const [widths, setWidths] = useState<Record<string, number>>(defaultColumnWidths);
+  // Server and first client render must agree, so the stored widths are only
+  // applied after mount. Until then everyone sees the defaults.
+  const [widthsHydrated, setWidthsHydrated] = useState(false);
   const [, startTransition] = useTransition();
   const router = useRouter();
 
-  const filtered = useMemo(
-    () => sortProjects(filterProjects(projects, query), sortKey, sortDir),
-    [projects, query, sortKey, sortDir],
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(WIDTHS_STORAGE_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw) as Record<string, unknown>;
+        setWidths(() => {
+          // Rebuilt from COLUMNS rather than from what was stored, so a column
+          // that has since been removed or renamed can't come back as a ghost.
+          const next = defaultColumnWidths();
+          for (const column of COLUMNS) {
+            const value = stored[column.key];
+            if (typeof value === "number" && Number.isFinite(value)) {
+              next[column.key] = clampColumnWidth(value);
+            }
+          }
+          return next;
+        });
+      }
+    } catch {
+      // A private window, a blocked store or corrupt JSON just means defaults.
+    }
+    setWidthsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!widthsHydrated) return;
+    try {
+      window.localStorage.setItem(WIDTHS_STORAGE_KEY, JSON.stringify(widths));
+    } catch {
+      // Not being able to remember the widths is not worth breaking the grid.
+    }
+  }, [widths, widthsHydrated]);
+
+  const totalWidth =
+    CHEVRON_COLUMN_WIDTH +
+    COLUMNS.reduce((sum, column) => sum + (widths[column.key] ?? column.defaultWidth), 0);
+
+  const widthsAreCustom = COLUMNS.some(
+    (column) => (widths[column.key] ?? column.defaultWidth) !== column.defaultWidth,
   );
+
+  /**
+   * Drag-to-resize. The pointer is captured on the handle itself, so the drag
+   * keeps working when the cursor runs ahead of the column or leaves the table.
+   */
+  function startResize(key: string, event: React.PointerEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const handle = event.currentTarget;
+    const startX = event.clientX;
+    const startWidth = widths[key] ?? columnByKey(key)?.defaultWidth ?? CHEVRON_COLUMN_WIDTH;
+
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is an improvement, not a requirement. If the browser refuses
+      // the pointer id, the drag must still run rather than die on the spot.
+    }
+
+    const onMove = (move: PointerEvent) => {
+      const next = clampColumnWidth(startWidth + (move.clientX - startX));
+      setWidths((current) => (current[key] === next ? current : { ...current, [key]: next }));
+    };
+
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+
+    // Listened for on the window, not the handle. Pointer capture already
+    // redirects the events here, and if the browser ever refuses the capture
+    // the drag still tracks a cursor that has run off a 10px strip.
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  }
+
+  /** Double-clicking a handle puts that one column back to its default. */
+  function resetColumn(key: string) {
+    const column = columnByKey(key);
+    if (!column) return;
+    setWidths((current) => ({ ...current, [key]: column.defaultWidth }));
+  }
+
+  const shown = useMemo(
+    () => (showHidden ? projects : projects.filter((p) => !p.hidden)),
+    [projects, showHidden],
+  );
+
+  const filtered = useMemo(
+    () =>
+      sortProjects(
+        filterByAssignment(filterProjects(shown, query), assignment),
+        sortKey,
+        sortDir,
+      ),
+    [shown, query, assignment, sortKey, sortDir],
+  );
+
+  const hiddenCount = useMemo(() => projects.filter((p) => p.hidden).length, [projects]);
+
+  // Counted against what is currently visible, so hiding a dead project also
+  // takes it out of the "no client" count rather than nagging about it forever.
+  const assignmentCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const filter of ASSIGNMENT_FILTERS) {
+      counts[filter.value] =
+        filter.value === "all"
+          ? shown.length
+          : shown.filter((p) => matchesAssignment(p, filter.value)).length;
+    }
+    return counts;
+  }, [shown]);
 
   /** asc → desc → unsorted, so you can always get back to the default order. */
   function toggleSort(key: string) {
@@ -125,9 +253,13 @@ export function ProjectGrid({
     }
   }
 
+  // The spreadsheet is meant to be the rows on screen, so every filter that
+  // narrows the grid has to travel with the link.
   const exportHref = `/api/export?${new URLSearchParams({
     ...(query.trim() ? { q: query.trim() } : {}),
     ...(sortKey ? { sort: sortKey, dir: sortDir } : {}),
+    ...(assignment !== "all" ? { assignment } : {}),
+    ...(showHidden ? { hidden: "1" } : {}),
   })}`;
 
   function save(id: string, patch: Parameters<typeof updateProjectAssignment>[1]) {
@@ -155,8 +287,18 @@ export function ProjectGrid({
         />
         <div className="flex items-center gap-4">
           <span className="text-xs text-neutral-500 dark:text-neutral-400">
-            {filtered.length} of {projects.length}
+            {filtered.length} of {shown.length}
           </span>
+          {widthsAreCustom ? (
+            <button
+              type="button"
+              onClick={() => setWidths(defaultColumnWidths())}
+              title="Put every column back to its starting width"
+              className="text-xs text-neutral-500 underline-offset-2 transition hover:text-[var(--brand-text)] hover:underline dark:text-neutral-400"
+            >
+              Reset column widths
+            </button>
+          ) : null}
           {/* A plain link, not fetch+blob — the browser handles the download and
               reuses the credentials it already holds for this origin. */}
           <a
@@ -168,17 +310,70 @@ export function ProjectGrid({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2">
+        {ASSIGNMENT_FILTERS.map((filter) => {
+          const active = assignment === filter.value;
+          const count = assignmentCounts[filter.value] ?? 0;
+          return (
+            <button
+              key={filter.value}
+              type="button"
+              onClick={() => setAssignment(filter.value)}
+              title={filter.hint}
+              aria-pressed={active}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                active
+                  ? "border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand-text)]"
+                  : "border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-400"
+              }`}
+            >
+              {filter.label}
+              <span className="ml-1.5 tabular-nums opacity-60">{count}</span>
+            </button>
+          );
+        })}
+
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowHidden((current) => !current)}
+            aria-pressed={showHidden}
+            title="Projects you have removed from the list. They stay in the database so a sync can't quietly bring them back."
+            className={`ml-auto rounded-full border px-3 py-1 text-xs font-medium transition ${
+              showHidden
+                ? "border-neutral-400 bg-neutral-100 text-neutral-700 dark:border-neutral-500 dark:bg-neutral-800 dark:text-neutral-200"
+                : "border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-400"
+            }`}
+          >
+            {showHidden ? "Hide removed" : "Show removed"}
+            <span className="ml-1.5 tabular-nums opacity-60">{hiddenCount}</span>
+          </button>
+        ) : null}
+      </div>
+
       {/* The scroll container needs a bounded height for a sticky header to have
           anything to stick to — position:sticky resolves against the nearest
           scrolling ancestor, and an unbounded div never scrolls. */}
       <div className="max-h-[calc(100vh-19rem)] overflow-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        <table className="w-full min-w-[1400px] text-sm">
+        {/* table-fixed is what makes the widths below authoritative — under the
+            default auto layout the browser re-measures from the content and a
+            dragged width is ignored. */}
+        <table className="grid-fixed table-fixed text-sm" style={{ width: totalWidth }}>
+          <colgroup>
+            <col style={{ width: CHEVRON_COLUMN_WIDTH }} />
+            {COLUMNS.map((column) => (
+              <col
+                key={column.key}
+                style={{ width: widths[column.key] ?? column.defaultWidth }}
+              />
+            ))}
+          </colgroup>
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               {/* Tailwind's preflight sets border-collapse:collapse, under which a
                   sticky cell's own border is dropped as the table collapses its
                   borders. An inset shadow draws the same 1px rule and survives. */}
-              <th className="sticky top-0 z-10 w-8 bg-white px-3 py-3 shadow-[inset_0_-1px_0_#e5e5e5] dark:bg-neutral-900 dark:shadow-[inset_0_-1px_0_#262626]" />
+              <th className="sticky top-0 z-10 bg-white px-3 py-3 shadow-[inset_0_-1px_0_#e5e5e5] dark:bg-neutral-900 dark:shadow-[inset_0_-1px_0_#262626]" />
               {COLUMNS.map((column) => {
                 const active = sortKey === column.key;
                 const alignment =
@@ -197,7 +392,7 @@ export function ProjectGrid({
                       type="button"
                       onClick={() => toggleSort(column.key)}
                       title={`Sort by ${column.label}`}
-                      className={`group inline-flex items-center gap-1 uppercase transition hover:text-[var(--brand-text)] ${
+                      className={`group inline-flex max-w-full items-center gap-1 truncate uppercase transition hover:text-[var(--brand-text)] ${
                         active ? "text-[var(--brand-text)]" : ""
                       }`}
                     >
@@ -211,6 +406,19 @@ export function ProjectGrid({
                         {active && sortDir === "asc" ? "▲" : "▼"}
                       </span>
                     </button>
+
+                    {/* Sits inside the header cell, on its right edge. Widening
+                        the hit area with padding would put it over the sort
+                        button, so it stays narrow and lights up on hover. */}
+                    <span
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label={`Resize ${column.label}`}
+                      title="Drag to resize, double-click to reset"
+                      onPointerDown={(event) => startResize(column.key, event)}
+                      onDoubleClick={() => resetColumn(column.key)}
+                      className="absolute inset-y-0 right-0 z-10 w-2.5 cursor-col-resize touch-none select-none bg-transparent transition hover:bg-[var(--brand)]"
+                    />
                   </th>
                 );
               })}
@@ -239,7 +447,11 @@ export function ProjectGrid({
                 >
                   {projects.length === 0
                     ? "No projects yet — hit “Sync now” to pull them from Vercel and GitHub."
-                    : "Nothing matches that filter."}
+                    : assignment === "no-client"
+                      ? "Every project on screen has a client. Nothing to chase."
+                      : assignment !== "all"
+                        ? "Nothing missing under that filter."
+                        : "Nothing matches that filter."}
                 </td>
               </tr>
             ) : null}
@@ -269,7 +481,13 @@ function RowGroup({
 
   return (
     <>
-      <tr className="border-b border-neutral-100 last:border-0 hover:bg-neutral-50 dark:border-neutral-800/60 dark:hover:bg-neutral-800/40">
+      <tr
+        className={`border-b border-neutral-100 last:border-0 hover:bg-neutral-50 dark:border-neutral-800/60 dark:hover:bg-neutral-800/40 ${
+          // Only ever on screen when "Show removed" is on, so it needs to be
+          // obvious that this row is not part of the live list.
+          p.hidden ? "opacity-50" : ""
+        }`}
+      >
         <td className="px-3 py-2 align-middle">
           <button
             onClick={onToggle}
@@ -282,13 +500,23 @@ function RowGroup({
         </td>
 
         <td className="px-3 py-2">
-          <div className="font-medium">{p.name}</div>
+          {/* Truncation lives on the content, not the cell: a narrowed column
+              should end in an ellipsis, not a letter sliced down the middle. */}
+          <div className="truncate font-medium" title={p.name}>
+            {p.hidden ? (
+              <span className="mr-1.5 rounded bg-neutral-200 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300">
+                Removed
+              </span>
+            ) : null}
+            {p.name}
+          </div>
           {p.productionUrl ? (
             <a
               href={`https://${p.productionUrl}`}
               target="_blank"
               rel="noreferrer"
-              className="text-xs text-neutral-500 hover:underline dark:text-neutral-400"
+              title={p.productionUrl}
+              className="block truncate text-xs text-neutral-500 hover:underline dark:text-neutral-400"
             >
               {p.productionUrl}
             </a>
@@ -298,12 +526,14 @@ function RowGroup({
         <td className="px-3 py-2">
           {p.gitOwner ? (
             <span
-              className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
+              className={`inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 text-xs font-medium ${
                 p.gitOwnerType === "ORGANIZATION"
                   ? "bg-[var(--brand-soft)] text-[var(--brand-text)]"
                   : "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
               }`}
-              title={p.gitOwnerType === "ORGANIZATION" ? "GitHub organisation" : "Personal account"}
+              title={`${p.gitOwner} — ${
+                p.gitOwnerType === "ORGANIZATION" ? "GitHub organisation" : "Personal account"
+              }`}
             >
               {p.gitOwner}
             </span>
@@ -311,7 +541,10 @@ function RowGroup({
             <span className="text-xs text-neutral-400">—</span>
           )}
           {p.vercelScopeName ? (
-            <div className="mt-0.5 text-xs text-neutral-400 dark:text-neutral-500">
+            <div
+              title={p.vercelScopeName}
+              className="mt-0.5 truncate text-xs text-neutral-400 dark:text-neutral-500"
+            >
               {p.vercelScopeName}
             </div>
           ) : null}
@@ -323,7 +556,8 @@ function RowGroup({
               href={p.gitUrl}
               target="_blank"
               rel="noreferrer"
-              className="font-mono text-xs hover:underline"
+              title={p.gitRepo ?? undefined}
+              className="block truncate font-mono text-xs hover:underline"
             >
               {p.gitRepo}
             </a>
@@ -332,7 +566,10 @@ function RowGroup({
           )}
         </td>
 
-        <td className="px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400">
+        <td
+          className="truncate px-3 py-2 text-xs text-neutral-600 dark:text-neutral-400"
+          title={p.vercelProjectName ?? undefined}
+        >
           {p.vercelProjectName ?? <span className="text-neutral-400">not deployed</span>}
         </td>
 
@@ -469,6 +706,23 @@ function RowGroup({
             ) : null}
 
             <NotesPanel projectId={p.id} notes={p.noteEntries} />
+
+            <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+              <button
+                type="button"
+                onClick={() => onSave(p.id, { hidden: !p.hidden })}
+                className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium transition hover:border-red-400 hover:text-red-600 dark:border-neutral-700 dark:hover:border-red-500 dark:hover:text-red-400"
+              >
+                {p.hidden ? "Put back in the list" : "Remove from the list"}
+              </button>
+              <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                {p.hidden
+                  ? "Hidden from the dashboard, the counts and the export."
+                  : // Deleting the row outright would not stick: the next sync finds
+                    // the repo on GitHub again and recreates it. Hiding does stick.
+                    "For projects you have finished with. Deleting them off Vercel or GitHub does not take them out of this list, and a delete here would just come back on the next sync."}
+              </span>
+            </div>
           </td>
         </tr>
       ) : null}
@@ -665,8 +919,11 @@ function OrgSelect({
   return (
     <select
       value={value ?? ""}
+      // No max width: the select fills whatever the Client / Customer column has
+      // been dragged to, so widening the column actually reveals the name.
+      title={organizations.find((org) => org.id === value)?.name ?? placeholder}
       onChange={(e) => onChange(e.target.value || null)}
-      className="w-full max-w-[160px] cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs outline-none hover:border-neutral-300 focus:border-neutral-400 dark:hover:border-neutral-600"
+      className="w-full cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs outline-none hover:border-neutral-300 focus:border-neutral-400 dark:hover:border-neutral-600"
     >
       <option value="">{placeholder}</option>
       {organizations.map((org) => (
