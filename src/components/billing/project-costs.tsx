@@ -8,9 +8,11 @@
  * with no client, marked as such, rather than hiding them behind the invoice.
  */
 
-import { Fragment, useState } from "react";
+import { Fragment, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import type { PeriodRollup } from "@/lib/billing/rollup";
 import { formatUsd, formatLocal, formatQuantity } from "@/lib/billing/format";
+import { setProjectAlreadyBilled } from "@/app/billing/actions";
 
 export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -63,6 +65,11 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
             <th className="px-5 py-2 font-medium">Client (you invoice)</th>
             <th className="px-5 py-2 font-medium">End customer (work is for)</th>
             <th className="px-5 py-2 font-medium">Vendors</th>
+            <th className="px-5 py-2 text-right font-medium">
+              <span title="What you already invoice for this project every month. Shown for reference only — nothing is deducted from the calculated bill.">
+                Already billing (R)
+              </span>
+            </th>
             <th className="px-5 py-2 text-right font-medium">Cost</th>
           </tr>
         </thead>
@@ -118,6 +125,19 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
                       ))}
                     </span>
                   </td>
+                  {/* Clicks inside the cell must not reach the row, or typing
+                      an amount would collapse the row out from under you. */}
+                  <td
+                    className="px-5 py-2.5 text-right"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <AlreadyBilledInput
+                      key={`${project.projectId}:${project.alreadyBilledZar ?? "none"}`}
+                      projectId={project.projectId}
+                      value={project.alreadyBilledZar}
+                      locked={rollup.period.closed}
+                    />
+                  </td>
                   <td className="px-5 py-2.5 text-right font-semibold tabular-nums">
                     {formatUsd(project.costUsd)}
                     {rollup.period.usdToZar !== null ? (
@@ -129,7 +149,7 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
                 </tr>
                 {isOpen ? (
                   <tr className="bg-neutral-50 dark:bg-neutral-950/40">
-                    <td colSpan={5} className="px-5 py-3">
+                    <td colSpan={6} className="px-5 py-3">
                       <table className="w-full text-xs">
                         <thead className="text-left text-neutral-500">
                           <tr>
@@ -166,5 +186,96 @@ export function ProjectCosts({ rollup }: { rollup: PeriodRollup }) {
         </tbody>
       </table>
     </section>
+  );
+}
+
+/**
+ * The standing monthly amount already invoiced for a project, in rand.
+ *
+ * Declared at module level so React keeps the same instance while you type.
+ * Saves on blur and on Enter rather than on every keystroke: an amount is only
+ * meaningful once it is finished, and "20" on the way to "2000" is not a figure
+ * anyone wants written to the database.
+ *
+ * The parent keys this on the saved value, so a fresh figure arriving from the
+ * server remounts the field rather than leaving a stale draft on screen.
+ */
+function AlreadyBilledInput({
+  projectId,
+  value,
+  locked,
+}: {
+  projectId: string;
+  value: number | null;
+  locked: boolean;
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value));
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
+
+  if (locked) {
+    return (
+      <span
+        className="text-sm tabular-nums text-neutral-500"
+        title="This period is closed, so its figures are frozen. Re-open it to change them."
+      >
+        {value === null ? "—" : value.toFixed(2)}
+      </span>
+    );
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    const saved = value === null ? "" : String(value);
+    if (trimmed === saved) return;
+
+    // An empty box means "nothing recorded", which is different from R0.00 —
+    // zero is a claim that you charge nothing, absence is that you never said.
+    if (trimmed === "") {
+      setError(null);
+      startTransition(async () => {
+        await setProjectAlreadyBilled(projectId, null);
+        router.refresh();
+      });
+      return;
+    }
+
+    const parsed = Number(trimmed.replace(/[\s,]/g, ""));
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setError("Enter a positive amount");
+      return;
+    }
+
+    setError(null);
+    startTransition(async () => {
+      const result = await setProjectAlreadyBilled(projectId, parsed);
+      if (!result.ok) setError(result.error ?? "Could not save");
+      else router.refresh();
+    });
+  }
+
+  return (
+    <span className="inline-flex flex-col items-end gap-0.5">
+      <input
+        inputMode="decimal"
+        value={draft}
+        disabled={pending}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") setDraft(value === null ? "" : String(value));
+        }}
+        placeholder="—"
+        aria-label="Amount already billed monthly, in rand"
+        className={`w-24 rounded-md border bg-transparent px-2 py-1 text-right text-sm tabular-nums outline-none transition placeholder:text-neutral-400 focus:border-[var(--brand)] disabled:opacity-50 ${
+          error
+            ? "border-red-400"
+            : "border-transparent hover:border-neutral-300 dark:hover:border-neutral-600"
+        }`}
+      />
+      {error ? <span className="text-[10px] text-red-600">{error}</span> : null}
+    </span>
   );
 }

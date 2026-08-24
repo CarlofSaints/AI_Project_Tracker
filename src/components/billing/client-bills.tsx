@@ -224,6 +224,24 @@ export function ClientBills({
                       </>
                     ) : null}
                   </dl>
+
+                  {client.alreadyBilledZar !== null ? (
+                    // Sits below the total, outside the <dl>, on purpose. It is
+                    // not a term of this bill — it is a standing arrangement to
+                    // check the bill against before a shared cost is split onto
+                    // someone who already pays for it.
+                    <p className="mt-3 rounded-md bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300 sm:max-w-sm">
+                      Already invoiced monthly:{" "}
+                      <strong className="tabular-nums">
+                        {formatLocal(client.alreadyBilledZar, "ZAR")}
+                      </strong>{" "}
+                      across{" "}
+                      {client.projects.filter((p) => p.alreadyBilledZar !== null).length} of{" "}
+                      {client.projects.length} project
+                      {client.projects.length === 1 ? "" : "s"}. Not deducted above — check it
+                      before splitting a shared cost onto this client.
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </li>

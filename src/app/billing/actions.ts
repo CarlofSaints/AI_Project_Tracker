@@ -193,6 +193,10 @@ export async function closePeriod(periodId: string) {
       };
     }
 
+    // Freeze the per-project standing figure too. Same reason as the markup:
+    // a retainer that changes next month must not silently restate this one.
+    const billedProjects = rollup.projects.filter((p) => p.alreadyBilledZar !== null);
+
     await prisma.$transaction([
       prisma.clientPeriodTerms.deleteMany({ where: { periodId } }),
       prisma.clientPeriodTerms.createMany({
@@ -200,6 +204,14 @@ export async function closePeriod(periodId: string) {
           periodId,
           clientId: client.clientId,
           markupBasisPoints: client.markupBasisPoints,
+        })),
+      }),
+      prisma.projectPeriodTerms.deleteMany({ where: { periodId } }),
+      prisma.projectPeriodTerms.createMany({
+        data: billedProjects.map((project) => ({
+          periodId,
+          projectId: project.projectId,
+          alreadyBilledZar: project.alreadyBilledZar as number,
         })),
       }),
       prisma.billingPeriod.update({
@@ -223,6 +235,33 @@ export async function reopenPeriod(periodId: string) {
   // The frozen markups stay. Re-opening is for correcting a figure, not for
   // silently re-pricing a client — delete the terms explicitly if that's wanted.
   refresh(period.label);
+  return { ok: true as const };
+}
+
+/**
+ * The standing monthly amount already invoiced for a project, in ZAR.
+ *
+ * Deliberately NOT tied to a period: it is what you charge every month until you
+ * change it. Closed periods keep their own frozen copy, so editing this can
+ * never rewrite a month that has already been invoiced.
+ *
+ * Reference only. Nothing subtracts it from a bill — whether a retainer is meant
+ * to cover third-party cost is a judgement per client, not arithmetic.
+ */
+export async function setProjectAlreadyBilled(projectId: string, amountZar: number | null) {
+  if (amountZar !== null && (!Number.isFinite(amountZar) || amountZar < 0)) {
+    return { ok: false as const, error: "Enter a positive amount, or clear the field." };
+  }
+
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      alreadyBilledZar: amountZar === null ? null : Math.round(amountZar * 100) / 100,
+    },
+  });
+
+  revalidatePath("/billing");
+  revalidatePath("/");
   return { ok: true as const };
 }
 

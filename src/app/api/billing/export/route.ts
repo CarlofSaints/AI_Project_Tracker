@@ -55,6 +55,9 @@ export async function GET(request: Request) {
     { header: "Markup (USD)", key: "markupUsd", width: 15 },
     { header: "Billable (USD)", key: "billable", width: 16 },
     { header: `Billable (${currency})`, key: "billableLocal", width: 18 },
+    // Reference only, never netted off. It sits here so nobody splits a shared
+    // cost onto a client who is already paying a retainer that covers it.
+    { header: "Already billed monthly (ZAR)", key: "alreadyBilled", width: 26 },
   ];
   for (const client of rollup.clients) {
     invoices.addRow({
@@ -75,6 +78,7 @@ export async function GET(request: Request) {
       markupUsd: client.markupUsd,
       billable: client.billableUsd,
       billableLocal: client.billableLocal,
+      alreadyBilled: client.alreadyBilledZar,
     });
   }
   // The total row sums the client columns above it and nothing else. Putting a
@@ -85,12 +89,13 @@ export async function GET(request: Request) {
   invoices.addRow({
     client: "TOTAL BILLED",
     projects: rollup.clients.reduce((sum, c) => sum + c.projects.length, 0),
-    direct: rollup.clients.reduce((sum, c) => sum + c.directCostUsd, 0),
-    shared: rollup.clients.reduce((sum, c) => sum + c.sharedCostUsd, 0),
-    cost: rollup.clients.reduce((sum, c) => sum + c.costUsd, 0),
-    markupUsd: rollup.clients.reduce((sum, c) => sum + c.markupUsd, 0),
+    direct: money(rollup.clients.reduce((sum, c) => sum + c.directCostUsd, 0)),
+    shared: money(rollup.clients.reduce((sum, c) => sum + c.sharedCostUsd, 0)),
+    cost: money(rollup.clients.reduce((sum, c) => sum + c.costUsd, 0)),
+    markupUsd: money(rollup.clients.reduce((sum, c) => sum + c.markupUsd, 0)),
     billable: rollup.totals.billableUsd,
     billableLocal: rollup.totals.billableLocal,
+    alreadyBilled: rollup.totals.alreadyBilledZar,
   }).font = { bold: true };
 
   invoices.addRow({});
@@ -106,6 +111,67 @@ export async function GET(request: Request) {
     invoices.addRow({ client: label, billable: value });
   }
 
+  // ------------------------------------------------------------- customers
+  // The same month grouped by who the work was for rather than who pays. Marked
+  // up at each paying client's own rate, so a customer served through two
+  // clients on different terms still adds up to what will actually be invoiced.
+  const byCustomer = workbook.addWorksheet("By customer", {
+    views: [{ state: "frozen", ySplit: 1 }],
+  });
+  byCustomer.columns = [
+    { header: "End customer", key: "customer", width: 30 },
+    // A blank end-customer field means the client is the end customer. That is
+    // a real answer, but it is derived, so it is labelled rather than passed off
+    // as recorded fact.
+    { header: "End customer recorded on", key: "recorded", width: 26 },
+    { header: "Billed through (client)", key: "clients", width: 30 },
+    { header: "Projects", key: "projects", width: 10 },
+    { header: "Direct cost (USD)", key: "cost", width: 18 },
+    { header: "Markup (USD)", key: "markupUsd", width: 15 },
+    { header: "Billable (USD)", key: "billable", width: 16 },
+    { header: `Billable (${currency})`, key: "billableLocal", width: 18 },
+    { header: "Already billed monthly (ZAR)", key: "alreadyBilled", width: 26 },
+  ];
+  for (const customer of rollup.customers) {
+    byCustomer.addRow({
+      customer: customer.name,
+      recorded: recordedLabel(customer.projects.length, customer.impliedProjectCount),
+      clients: customer.clientNames.join(", "),
+      projects: customer.projects.length,
+      cost: customer.costUsd,
+      markupUsd: customer.markupUsd,
+      billable: customer.billableUsd,
+      billableLocal: customer.billableLocal,
+      alreadyBilled: customer.alreadyBilledZar,
+    });
+  }
+
+  byCustomer.addRow({});
+  byCustomer.addRow({
+    customer: "TOTAL, DIRECT COST ONLY",
+    projects: rollup.customers.reduce((sum, c) => sum + c.projects.length, 0),
+    cost: money(rollup.customers.reduce((sum, c) => sum + c.costUsd, 0)),
+    markupUsd: money(rollup.customers.reduce((sum, c) => sum + c.markupUsd, 0)),
+    billable: money(rollup.customers.reduce((sum, c) => sum + c.billableUsd, 0)),
+    billableLocal:
+      rate === null
+        ? null
+        : money(rollup.customers.reduce((sum, c) => sum + c.billableUsd, 0) * rate),
+    alreadyBilled: rollup.totals.alreadyBilledZar,
+  }).font = { bold: true };
+
+  // Why this sheet is smaller than Client bills. Saying it here beats someone
+  // finding the gap on their own and assuming a number went missing.
+  byCustomer.addRow({});
+  byCustomer.addRow({
+    customer: "Shared costs are not in this sheet",
+    billable: rollup.totals.sharedNotInCustomerView,
+  });
+  byCustomer.addRow({
+    customer:
+      "Subscriptions and seats are allocated to a client, not to an end customer, so they only appear on Client bills and Shared costs.",
+  });
+
   // -------------------------------------------------------------- projects
   const byProject = workbook.addWorksheet("By project", {
     views: [{ state: "frozen", ySplit: 1 }],
@@ -120,13 +186,18 @@ export async function GET(request: Request) {
     { header: "Unit", key: "unit", width: 14 },
     { header: "Cost (USD)", key: "cost", width: 14 },
     { header: `Cost (${currency})`, key: "costLocal", width: 16 },
+    { header: "Already billed monthly (ZAR)", key: "alreadyBilled", width: 26 },
   ];
   for (const project of [...rollup.projects, ...rollup.unassigned]) {
+    let first = true;
     for (const service of project.services) {
       byProject.addRow({
         project: project.name,
         client: project.clientName ?? "— no client —",
         customer: project.endCustomerName ?? "",
+        // Only on the project's first row: repeating a monthly retainer against
+        // every service line would make any column total wildly wrong.
+        alreadyBilled: first ? project.alreadyBilledZar : null,
         vendor: service.vendorLabel,
         service: service.service,
         quantity: service.quantity,
@@ -134,6 +205,7 @@ export async function GET(request: Request) {
         cost: service.costUsd,
         costLocal: rate === null ? null : service.costUsd * rate,
       });
+      first = false;
     }
   }
 
@@ -233,4 +305,20 @@ export async function GET(request: Request) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+/** A float sum lands in the cell verbatim, so round before it gets there. */
+function money(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * How an end customer was arrived at. A blank end-customer field means the
+ * client is the end customer, which is a real answer but a derived one, so it
+ * is spelled out rather than passed off as recorded fact.
+ */
+function recordedLabel(total: number, implied: number): string {
+  if (implied === 0) return "All projects";
+  if (implied === total) return "None, assumed from the client";
+  return `${total - implied} of ${total} projects, rest assumed from the client`;
 }

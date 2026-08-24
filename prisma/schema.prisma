@@ -177,6 +177,18 @@ model Project {
   // Hide from the grid without deleting (e.g. throwaway experiments).
   hidden Boolean @default(false)
 
+  // What Carl already invoices for this project every month, in ZAR, entered by
+  // hand. Purely a reference figure shown next to the calculated bill: it is
+  // never subtracted, because whether a retainer is meant to cover third-party
+  // cost is a judgement per client, not arithmetic. It is here so a shared-cost
+  // split cannot quietly bill someone a second time for what they already pay.
+  //
+  // Standing, not per month — it applies to every open period until changed, and
+  // is frozen into ProjectPeriodTerms when a period closes.
+  alreadyBilledZar Decimal? @db.Decimal(14, 2)
+
+  periodTerms ProjectPeriodTerms[]
+
   ownerId String?
   owner   User?   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
 
@@ -314,10 +326,11 @@ model BillingPeriod {
   closed   Boolean   @default(false)
   closedAt DateTime?
 
-  costLines   CostLine[]
-  allocations SharedCostAllocation[]
-  terms       ClientPeriodTerms[]
-  ingestRuns  CostIngestRun[]
+  costLines     CostLine[]
+  allocations   SharedCostAllocation[]
+  terms         ClientPeriodTerms[]
+  projectTerms  ProjectPeriodTerms[]
+  ingestRuns    CostIngestRun[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -416,6 +429,26 @@ model ClientPeriodTerms {
   markupBasisPoints Int
 
   @@unique([periodId, clientId])
+}
+
+/**
+ * What Project.alreadyBilledZar said at the moment a period was closed.
+ *
+ * Same reason ClientPeriodTerms exists: the standing figure is expected to
+ * change, and a closed month must keep saying what it said when it was closed
+ * rather than silently re-stating itself every time a retainer is renegotiated.
+ */
+model ProjectPeriodTerms {
+  id       String        @id @default(cuid())
+  periodId String
+  period   BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  projectId String
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  alreadyBilledZar Decimal @db.Decimal(14, 2)
+
+  @@unique([periodId, projectId])
+  @@index([periodId])
 }
 
 // Maps a vendor's own identity for a project onto ours.

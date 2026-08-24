@@ -7,6 +7,7 @@ import { PeriodHeader } from "@/components/billing/period-header";
 import { AttentionPanel } from "@/components/billing/attention-panel";
 import { BaseFeeAllocator } from "@/components/billing/base-fee-allocator";
 import { ClientBills } from "@/components/billing/client-bills";
+import { CustomerCosts } from "@/components/billing/customer-costs";
 import { ProjectCosts } from "@/components/billing/project-costs";
 import { BillingControls } from "@/components/billing/billing-controls";
 
@@ -153,6 +154,8 @@ export default async function BillingPage({
       <BaseFeeAllocator rollup={rollup} organizations={organizations} />
 
       <ClientBills rollup={rollup} organizations={organizations} />
+
+      <CustomerCosts rollup={rollup} />
 
       <ProjectCosts rollup={rollup} />
 

@@ -58,6 +58,12 @@ export interface ProjectCost {
   endCustomerId: string | null;
   endCustomerName: string | null;
   costUsd: number;
+  /**
+   * What is already invoiced monthly for this project, in ZAR. Reference only:
+   * never netted off, so a figure entered here can never quietly reduce a bill.
+   * Frozen at the value it held when the period closed.
+   */
+  alreadyBilledZar: number | null;
   byVendor: Array<{ vendor: Vendor; vendorLabel: string; costUsd: number }>;
   services: ServiceLine[];
 }
@@ -99,6 +105,39 @@ export interface ClientBill {
   markupUsd: number;
   billableUsd: number;
   billableLocal: number | null;
+  /** Standing monthly invoicing already in place across this client's projects. */
+  alreadyBilledZar: number | null;
+}
+
+/**
+ * The same month grouped by who the work was actually for.
+ *
+ * Only DIRECT project cost rolls up here. Shared base fees are allocated to
+ * clients, not customers, and there is no honest way to push a Pro seat down
+ * onto an end customer — so they are deliberately absent rather than spread
+ * around to make a total look complete. See `totals.sharedNotInCustomerView`.
+ */
+export interface CustomerRollup {
+  customerId: string;
+  name: string;
+  /**
+   * How many of this customer's projects reached it by assumption rather than by
+   * a recorded end customer. Where nothing is recorded the client IS the end
+   * customer, which is a real answer but a derived one.
+   *
+   * Counted rather than flagged because a company is routinely both: iRam is the
+   * recorded end customer on three projects and the unnamed one on ten. Splitting
+   * it into two rows over that would turn a data-entry gap into two companies.
+   */
+  impliedProjectCount: number;
+  /** Every client that invoices for work done for this customer. */
+  clientNames: string[];
+  projects: ProjectCost[];
+  costUsd: number;
+  markupUsd: number;
+  billableUsd: number;
+  billableLocal: number | null;
+  alreadyBilledZar: number | null;
 }
 
 export interface PeriodRollup {
@@ -117,6 +156,8 @@ export interface PeriodRollup {
   defaultMarkupBasisPoints: number;
   /** Projects with a client, most expensive first. */
   projects: ProjectCost[];
+  /** The same direct cost grouped by the company the work was for. */
+  customers: CustomerRollup[];
   /** Projects carrying cost but no client — revenue you are not billing for. */
   unassigned: ProjectCost[];
   unattributed: UnattributedBucket[];
@@ -135,6 +176,14 @@ export interface PeriodRollup {
     billableUsd: number;
     billableLocal: number | null;
     marginUsd: number;
+    /** Standing monthly invoicing across every project that has a figure. */
+    alreadyBilledZar: number | null;
+    /**
+     * Shared base fees that the customer view cannot show, because they belong
+     * to a client rather than to any end customer. Stated so the two views can
+     * be reconciled instead of looking like one of them lost money.
+     */
+    sharedNotInCustomerView: number;
   };
 }
 
@@ -151,7 +200,7 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
   const period = await prisma.billingPeriod.findUnique({ where: { id: periodId } });
   if (!period) return null;
 
-  const [settings, lines, allocations, terms, organizations] = await Promise.all([
+  const [settings, lines, allocations, terms, projectTerms, organizations] = await Promise.all([
     prisma.billingSettings.findUnique({ where: { id: "singleton" } }),
     prisma.costLine.findMany({
       where: { periodId },
@@ -164,6 +213,7 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
             client: { select: { id: true, name: true } },
             endCustomerId: true,
             endCustomer: { select: { id: true, name: true } },
+            alreadyBilledZar: true,
           },
         },
       },
@@ -173,8 +223,30 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
       include: { client: { select: { id: true, name: true } } },
     }),
     prisma.clientPeriodTerms.findMany({ where: { periodId } }),
+    prisma.projectPeriodTerms.findMany({ where: { periodId } }),
     prisma.organization.findMany({ select: { id: true, name: true, markupBasisPoints: true } }),
   ]);
+
+  // A closed period says what it said when it closed. An open one follows the
+  // standing figure, so changing a retainer is reflected without re-keying it.
+  const frozenAlreadyBilled = new Map(
+    projectTerms.map((t) => [t.projectId, Number(t.alreadyBilledZar)]),
+  );
+
+  function alreadyBilledFor(project: { id: string; alreadyBilledZar: unknown }): number | null {
+    const frozen = frozenAlreadyBilled.get(project.id);
+    if (frozen !== undefined) return frozen;
+    return project.alreadyBilledZar === null || project.alreadyBilledZar === undefined
+      ? null
+      : Number(project.alreadyBilledZar);
+  }
+
+  /** Sum that stays null when nothing was entered, rather than reading as R0. */
+  function sumAlreadyBilled(items: Array<{ alreadyBilledZar: number | null }>): number | null {
+    const present = items.filter((i) => i.alreadyBilledZar !== null);
+    if (present.length === 0) return null;
+    return round2(present.reduce((sum, i) => sum + (i.alreadyBilledZar ?? 0), 0));
+  }
 
   const currency = settings?.billingCurrency ?? "ZAR";
   const defaultMarkup = settings?.defaultMarkupBasisPoints ?? 1500;
@@ -241,6 +313,7 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
       endCustomerId: line.project.endCustomerId,
       endCustomerName: line.project.endCustomer?.name ?? null,
       costUsd: 0,
+      alreadyBilledZar: alreadyBilledFor(line.project),
       byVendor: [],
       services: [],
     };
@@ -364,9 +437,66 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
         markupUsd: round2(billableUsd - costUsd),
         billableUsd,
         billableLocal: rate === null ? null : round2(billableUsd * rate),
+        alreadyBilledZar: sumAlreadyBilled(clientProjects),
       };
     })
     .sort((a, b) => b.billableUsd - a.billableUsd);
+
+  // ------------------------------------------------------------- customers
+  // Grouped by who the work was for. A project with no end customer recorded is
+  // filed under its client, because when nobody else is named the client IS the
+  // end customer — but flagged, so a blank field is never mistaken for a fact.
+  const customerMap = new Map<string, CustomerRollup>();
+
+  for (const project of projects) {
+    const recorded = project.endCustomerId !== null;
+    const customerId = project.endCustomerId ?? project.clientId;
+    const name = recorded ? project.endCustomerName : project.clientName;
+    if (!customerId || !name) continue;
+
+    // Keyed on the company alone. A customer reached both ways is one customer.
+    const entry = customerMap.get(customerId) ?? {
+      customerId,
+      name,
+      impliedProjectCount: 0,
+      clientNames: [],
+      projects: [],
+      costUsd: 0,
+      markupUsd: 0,
+      billableUsd: 0,
+      billableLocal: null,
+      alreadyBilledZar: null,
+    };
+
+    entry.projects.push(project);
+    entry.costUsd += project.costUsd;
+    if (!recorded) entry.impliedProjectCount += 1;
+    if (project.clientName && !entry.clientNames.includes(project.clientName)) {
+      entry.clientNames.push(project.clientName);
+    }
+    customerMap.set(customerId, entry);
+  }
+
+  const customers = [...customerMap.values()]
+    .map((entry) => {
+      // Marked up at each paying client's own rate, so a customer served through
+      // two clients on different terms still adds up to what will be invoiced.
+      const billableUsd = round2(
+        entry.projects.reduce(
+          (sum, p) =>
+            sum + p.costUsd * (1 + (p.clientId ? effectiveMarkup(p.clientId) : defaultMarkup) / 10000),
+          0,
+        ),
+      );
+      entry.costUsd = round2(entry.costUsd);
+      entry.markupUsd = round2(billableUsd - entry.costUsd);
+      entry.billableUsd = billableUsd;
+      entry.billableLocal = rate === null ? null : round2(billableUsd * rate);
+      entry.alreadyBilledZar = sumAlreadyBilled(entry.projects);
+      entry.clientNames.sort((a, b) => a.localeCompare(b));
+      return entry;
+    })
+    .sort((a, b) => b.billableUsd - a.billableUsd || a.name.localeCompare(b.name));
 
   // --------------------------------------------------------------- totals
   const unattributed = [...unattributedMap.values()].sort((a, b) => b.costUsd - a.costUsd);
@@ -397,6 +527,7 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
     currency,
     defaultMarkupBasisPoints: defaultMarkup,
     projects,
+    customers,
     unassigned,
     unattributed,
     baseFees,
@@ -413,6 +544,10 @@ export async function buildPeriodRollup(periodId: string): Promise<PeriodRollup 
       billableLocal: rate === null ? null : round2(billableUsd * rate),
       // What you keep: what you invoice, minus everything you paid.
       marginUsd: round2(billableUsd - costUsd),
+      alreadyBilledZar: sumAlreadyBilled(projects),
+      // Shared base fees belong to a client, not to any end customer, so the
+      // customer view is smaller than the client view by exactly this much.
+      sharedNotInCustomerView: round2(baseFeeUsd),
     },
   };
 }
