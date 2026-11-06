@@ -80,6 +80,7 @@ npm run dev
 | `ANTHROPIC_ADMIN_KEY` | Billing only. An **Admin** key (`sk-ant-admin01-…`), not a normal API key. See Billing below. |
 | `RESEND_API_KEY` | Billing only. Needs permission to list emails. |
 | `CRON_SECRET` | Guards `/api/sync` and `/api/billing/ingest`. |
+| `GOOGLE_ANALYTICS_CREDENTIALS` | Analytics only. The whole service-account JSON key, pasted as one value. Without it `/analytics` lists sites but shows no figures. |
 
 > Vercel env vars marked **Sensitive** read back empty from `vercel env pull`.
 > An empty value there is not proof the variable is unset.
