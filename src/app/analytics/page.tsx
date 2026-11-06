@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { disconnectAnalytics } from "./actions";
 import { AnalyticsAddSite } from "@/components/analytics-add-site";
+import { AnalyticsGuide } from "@/components/analytics-guide";
 import {
   PERIODS,
   analyticsConfigured,
@@ -116,6 +117,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
       )}
 
       <AnalyticsAddSite projects={available} />
+      <AnalyticsGuide />
 
       {sites.length === 0 && (
         <p className="text-sm text-neutral-500 dark:text-neutral-400">No projects added yet.</p>
