@@ -51,7 +51,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
 
   const [sites, available] = await Promise.all([
     prisma.project.findMany({
-      where: { ga4PropertyId: { not: null } },
+      where: { ga4PropertyId: { not: null }, hidden: false },
       orderBy: { name: "asc" },
       select: { id: true, name: true, productionUrl: true, ga4PropertyId: true },
     }),
@@ -136,7 +136,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
                   <h2 className="font-semibold">{site.name}</h2>
                   {site.productionUrl && (
                     <a
-                      href={site.productionUrl.startsWith("http") ? site.productionUrl : `https://${site.productionUrl}`}
+                      href={`https://${site.productionUrl}`}
                       target="_blank"
                       rel="noreferrer"
                       className="text-xs text-[var(--brand-text)] hover:underline"
@@ -159,7 +159,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
               )}
               {report && report.sessions === 0 && (
                 <p className="mt-3 text-sm text-neutral-500 dark:text-neutral-400">
-                  No visits recorded in the last {days} days.
+                  No visits recorded in the last {days} full days. Today only shows from tomorrow.
                 </p>
               )}
               {report && report.sessions > 0 && (

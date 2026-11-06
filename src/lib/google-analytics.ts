@@ -1,5 +1,7 @@
 import { createSign } from "node:crypto";
 
+const GOOGLE_TIMEOUT_MS = 10_000;
+
 export const PERIODS = [7, 28, 90] as const;
 export type PeriodDays = (typeof PERIODS)[number];
 
@@ -34,6 +36,9 @@ export async function getAccessToken(): Promise<string> {
     // Never surface the parse error: Node quotes a slice of the key in it.
     throw new Error("GOOGLE_ANALYTICS_CREDENTIALS is not valid JSON");
   }
+  if (!credentials?.client_email || !credentials.private_key) {
+    throw new Error("GOOGLE_ANALYTICS_CREDENTIALS is not a service-account key file");
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const unsigned = [
@@ -48,7 +53,12 @@ export async function getAccessToken(): Promise<string> {
       }),
     ),
   ].join(".");
-  const signature = createSign("RSA-SHA256").update(unsigned).sign(credentials.private_key, "base64url");
+  let signature: string;
+  try {
+    signature = createSign("RSA-SHA256").update(unsigned).sign(credentials.private_key, "base64url");
+  } catch {
+    throw new Error("The private key in GOOGLE_ANALYTICS_CREDENTIALS could not be read");
+  }
 
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -58,9 +68,13 @@ export async function getAccessToken(): Promise<string> {
       assertion: `${unsigned}.${signature}`,
     }),
     cache: "no-store",
+    signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Google sign-in failed (${response.status})`);
-  return (await response.json()).access_token;
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.access_token) {
+    throw new Error(`Google sign-in failed (${response.status}): ${body?.error_description ?? "no details"}`);
+  }
+  return body.access_token;
 }
 
 function toRanking(report: GaReport | undefined) {
@@ -89,7 +103,8 @@ export async function fetchSiteReport(
   days: PeriodDays,
   accessToken: string,
 ): Promise<SiteReport> {
-  const dateRanges = [{ startDate: `${days}daysAgo`, endDate: "today" }];
+  // Ends yesterday: today is partial, and "7daysAgo" to "today" would be 8 dates.
+  const dateRanges = [{ startDate: `${days}daysAgo`, endDate: "yesterday" }];
   const ranking = (dimension: string, metric: string) => ({
     dateRanges,
     dimensions: [{ name: dimension }],
@@ -116,15 +131,14 @@ export async function fetchSiteReport(
         ],
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
     },
   );
 
-  if (response.status === 403) {
-    throw new Error("Google refused access. Add the service account as a Viewer on this property.");
+  const body = await response.json().catch(() => null);
+  // Google's own message, because a 403 can mean a missing Viewer or a disabled API.
+  if (!response.ok) {
+    throw new Error(`Google Analytics failed (${response.status}): ${body?.error?.message ?? "no details"}`);
   }
-  if (response.status === 400 || response.status === 404) {
-    throw new Error("Google does not recognise this property ID.");
-  }
-  if (!response.ok) throw new Error(`Google Analytics failed (${response.status})`);
-  return parseReports((await response.json()).reports ?? []);
+  return parseReports(body?.reports ?? []);
 }
