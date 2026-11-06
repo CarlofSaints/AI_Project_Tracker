@@ -140,6 +140,10 @@ model Project {
   vercelScopeName   String? // "Carl Dos Santos' projects" | "OUTERJOIN"
   productionUrl     String?
 
+  // Google Analytics 4 property (digits, not the G- tag). Human-owned, set on
+  // /analytics. Null = not being measured.
+  ga4PropertyId String? @unique
+
   // -- Git --------------------------------------------------------
   gitOwner      String? // CarlofSaints | OuterJoinZA
   gitOwnerType  GitOwnerType?
